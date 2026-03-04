@@ -6,6 +6,11 @@ import datetime
 import pytz
 import yfinance as yf
 import math
+from streamlit_autorefresh import st_autorefresh
+
+# --- AUTO-REFRESH TIMER ---
+# Refreshes the page every 60 seconds (60000 milliseconds)
+st_autorefresh(interval=60000, limit=None, key="dashboard_refresh")
 
 # 1. Page Setup & Load CSS
 st.set_page_config(page_title="SPX Dashboard", layout="wide")
