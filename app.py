@@ -145,7 +145,7 @@ with col_left:
         
         in1, in2 = st.columns(2)
         buying_power = in1.number_input("Buying power ($)", value=150000, step=10000, format="%d")
-        spread_width = in2.selectbox("Spread width", [10, 25, 50, 100], index=2)
+        spread_width = in2.selectbox("Spread width", [10, 20, 40, 60, 80, 100], index=1)
         
         # --- THE MATH FOR CONTRACTS ---
         # Buying Power / (Spread Width * 100)
