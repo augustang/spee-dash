@@ -1,0 +1,175 @@
+/* Import Inter */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* Force Inter and REDUCE global base size */
+/* Force Inter on literally every HTML element */
+* {
+    font-family: 'Inter', sans-serif !important;
+}
+
+html, body, [class*="css"], [class*="st-"] {
+    font-family: 'Inter', sans-serif !important;
+    font-size: 12px !important; 
+}
+
+/* --- GLOBAL BASE SIZE --- */
+/* This sets the baseline. 1rem will equal 13px */
+html, body {
+    font-size: 13px !important; 
+}
+
+/* --- SECTION LABELS (e.g., "Metrics", "Spreads") --- */
+.section-label {
+    font-size: 12px !important; /* Tweak this */
+    font-weight: 400 !important;
+    margin: 0 0 12px 0 !important;
+}
+
+/* --- THE BIG METRIC NUMBERS (e.g., "6860") --- */
+.st-emotion-cache-1q82h82 {
+    font-size: 20px !important; /* Tweak this */
+    font-weight: 400 !important;
+}
+
+/* --- THE SMALL METRIC LABELS (e.g., "SPX Open") --- */
+div[data-testid="stMetricLabel"] {
+    font-size: 8px !important; /* Tweak this */
+    font-weight: 400 !important;
+    color: black !important;
+}
+
+/* --- INPUT FIELD TEXT (e.g., inside "Buying Power") --- */
+div[data-baseweb="input"] input, 
+div[data-baseweb="select"] div {
+    font-size: 12px !important; /* Tweak this */
+}
+
+/* --- INPUT FIELD LABELS (e.g., "Contracts") --- */
+.stNumberInput label, .stSelectbox label {
+    font-size: 8px !important; /* Tweak this */
+    color: black !important;
+}
+
+/* --- GREEN PILL TEXT --- */
+div[data-testid="stMetricDelta"] > div {
+    font-size: 12px !important; /* Tweak this */
+    font-weight: 400 !important;
+}
+
+
+/* Main background color */
+.stApp {
+    background-color: #F4F4F4 !important;
+}
+
+/* fyi this is auto generated class by streamlit; reinspect and update if you update streamlit version */
+.st-emotion-cache-14vh5up {
+    background-color: #F4F4F4 !important;
+}
+
+/* 0. MAIN GRID LAYOUT */
+
+.st-emotion-cache-wfksaw {
+    gap: 1rem !important;
+}
+
+/* Add margin on segment graph controls */
+.st-emotion-cache-zh2fnc {
+    margin: 0 0 0px 0 !important;
+}
+
+@media (min-width: calc(736px + 8rem)) {
+    .st-emotion-cache-zy6yx3 {
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+}
+
+/* 1. WHITE CARDS: Remove Streamlit's border */
+.st-emotion-cache-1ne20ew {
+    border: none !important;
+    /* box-shadow: 0px 4px 15px rgba(0, 0, 0, 0.04) !important; */
+    border-radius: 12px !important;
+    background-color: white !important;
+}
+
+/* Adjust padding inside the white cards */
+div[data-testid="stVerticalBlockBorderWrapper"] > div {
+    padding: 0.5rem !important; 
+}
+
+/* Section Labels */
+.section-label {
+    background-color: #EAEAEA;
+    padding: 4px 10px;
+    border-radius: 15px;
+    font-size: 11px;
+    font-weight: 600;
+    color: black;
+    display: inline-block;
+    margin-bottom: 22px; 
+}
+
+/* Metric tweaks */
+div[data-testid="stMetricValue"] {
+    font-size: 1.6rem !important; 
+    font-weight: 500 !important;
+    color: #000 !important;
+}
+div[data-testid="stMetricLabel"] {
+    font-size: 0.8rem !important;
+    color: black !important;
+}
+
+/* Metric Pills (Green Backgrounds) */
+.st-emotion-cache-5znelh {
+    background-color: none;
+    font-size: 12px !important;
+    display: inline-flex;
+    flex-direction: row;
+    -webkit-box-align: center;
+    align-items: center;
+    font-weight: 400;
+    border-radius: none;
+    padding: 0;
+    max-width: 100%;
+}
+
+div[data-testid="stMetricDelta"] > div {
+    background-color: #11F185;
+    color: black !important;
+    border-radius: 8px;
+    padding: 6px 12px !important;
+}
+
+div[data-testid="stMetricDelta"] svg {
+    display: none; 
+}
+
+/* 2. INPUT FIELDS: Soft gray background, no border */
+.st-emotion-cache-1py5frv {
+    background-color:#F1F2F6 !important;
+}
+
+/* 3. SEGMENTED CONTROLS and SECTION LABELS spacing */
+
+/* 3. SEGMENTED CONTROLS: Change from red to dark gray/black - this is not working lol */
+/* div[data-testid="stSegmentedControl"] {
+    background-color: #F4F4F4 !important;
+    border-radius: 20px !important;
+    padding: 2px !important;
+}
+div[data-testid="stSegmentedControl"] label[data-selected="true"] {
+    background-color: #1E1E1E !important;
+    color: white !important;
+    border-radius: 16px !important;
+}
+div[data-testid="stSegmentedControl"] label[data-selected="false"] {
+    color: #666 !important;
+} */
+
+/* Tweak the dataframe */
+div[data-testid="stDataFrame"] {
+    border-radius: 8px;
+    font-size: 12px !important;
+}
