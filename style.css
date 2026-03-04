@@ -186,10 +186,12 @@ div[data-testid="stMetricValue"] span {
 }
 
 /* --- FIX THE GREEN CHANGE PILL PADDING --- */
-/* 1. Stop the outer container from stretching across the whole column */
+/* 1. Kill the default Streamlit faint background and spacing */
 div[data-testid="stMetricDelta"] {
     width: fit-content !important;
     margin-top: 0px !important;
+    padding: 0px !important;
+    background-color: transparent !important; /* <-- THIS KILLS THE HALO */
 }
 
 /* 2. Style the inner pill to tightly hug the text */
@@ -198,18 +200,18 @@ div[data-testid="stMetricDelta"] > div {
     color: #000000 !important; 
     font-size: 12px !important; 
     font-weight: 400 !important;
-    padding: 4px 8px !important; /* Tighter inner padding */
+    padding: 4px 8px !important; 
     border-radius: 8px !important; 
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
-    width: fit-content !important; /* Forces the background to snap to the text */
+    width: fit-content !important; 
 }
 
 /* 3. Tame the arrow icon's spacing */
 div[data-testid="stMetricDelta"] svg {
     fill: #000000 !important; 
     margin-right: 4px !important;
-    height: 14px !important; /* Keep the arrow proportionate */
+    height: 14px !important; 
     width: 14px !important;
 }
