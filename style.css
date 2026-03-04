@@ -185,22 +185,31 @@ div[data-testid="stMetricValue"] span {
     line-height: 1.2 !important;
 }
 
-/* --- FIX THE GREEN CHANGE PILL --- */
-/* Target the actual inner container of the delta */
-div[data-testid="stMetricDelta"] > div {
-    background-color: #32FA8F !important; /* Solid bright green */
-    color: #000000 !important; /* Black text */
-    font-size: 12px !important; 
-    font-weight: 400 !important;
-    padding: 4px 10px !important; /* Shape it into a pill */
-    border-radius: 16px !important; /* Round the edges completely */
-    display: inline-flex !important;
-    align-items: center !important;
+/* --- FIX THE GREEN CHANGE PILL PADDING --- */
+/* 1. Stop the outer container from stretching across the whole column */
+div[data-testid="stMetricDelta"] {
+    width: fit-content !important;
     margin-top: 0px !important;
 }
 
-/* Color the little arrow inside the pill black to match */
+/* 2. Style the inner pill to tightly hug the text */
+div[data-testid="stMetricDelta"] > div {
+    background-color: #32FA8F !important; 
+    color: #000000 !important; 
+    font-size: 12px !important; 
+    font-weight: 400 !important;
+    padding: 2px 8px !important; /* Tighter inner padding */
+    border-radius: 12px !important; 
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: fit-content !important; /* Forces the background to snap to the text */
+}
+
+/* 3. Tame the arrow icon's spacing */
 div[data-testid="stMetricDelta"] svg {
     fill: #000000 !important; 
-    margin-right: 2px !important;
+    margin-right: 4px !important;
+    height: 14px !important; /* Keep the arrow proportionate */
+    width: 14px !important;
 }
