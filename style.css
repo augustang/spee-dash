@@ -198,8 +198,8 @@ div[data-testid="stMetricDelta"] > div {
     color: #000000 !important; 
     font-size: 12px !important; 
     font-weight: 400 !important;
-    padding: 2px 8px !important; /* Tighter inner padding */
-    border-radius: 12px !important; 
+    padding: 4px 8px !important; /* Tighter inner padding */
+    border-radius: 8px !important; 
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
