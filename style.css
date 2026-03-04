@@ -179,8 +179,8 @@ div[data-testid="stDataFrame"] {
 div[data-testid="stMetricValue"], 
 div[data-testid="stMetricValue"] > div,
 div[data-testid="stMetricValue"] span {
-    font-size: 28px !important; 
-    font-weight: 600 !important;
+    font-size: 20px !important; 
+    font-weight: 400 !important;
     color: #1E1E1E !important;
     line-height: 1.2 !important;
 }
@@ -191,12 +191,12 @@ div[data-testid="stMetricDelta"] > div {
     background-color: #32FA8F !important; /* Solid bright green */
     color: #000000 !important; /* Black text */
     font-size: 12px !important; 
-    font-weight: 600 !important;
+    font-weight: 400 !important;
     padding: 4px 10px !important; /* Shape it into a pill */
     border-radius: 16px !important; /* Round the edges completely */
     display: inline-flex !important;
     align-items: center !important;
-    margin-top: 5px !important;
+    margin-top: 0px !important;
 }
 
 /* Color the little arrow inside the pill black to match */
