@@ -98,6 +98,27 @@ change_pct = (change_pts / spx_prior_close) * 100
 arrow = "↑" if change_pts >= 0 else "↓"
 prior_delta_string = f"{arrow} {abs(change_pts):.2f} pts ({abs(change_pct):.2f}%)"
 
+# --- FETCH LIVE OPTIONS DATA ---
+@st.cache_data(ttl=60) # Caches the data for 60 seconds to keep the app fast
+def get_spx_puts(current_price):
+    spx = yf.Ticker("^SPX")
+    expirations = spx.options
+    
+    # Safety check in case the market is closed/data is missing
+    if not expirations:
+        return pd.DataFrame()
+        
+    # Grab the closest expiration date (0DTE or next available)
+    chain = spx.option_chain(expirations[0])
+    puts = chain.puts
+    
+    # Filter for Out-of-the-Money (OTM) puts only, and sort closest to the money first
+    otm_puts = puts[puts['strike'] < current_price].sort_values(by='strike', ascending=False)
+    return otm_puts
+
+# Actually call the function to get the data
+live_puts_df = get_spx_puts(spx_last)
+
 # 4. Main Layout Columns
 col_left, col_right = st.columns([1.3, 2.7], gap="medium")
 
@@ -137,36 +158,52 @@ with col_left:
     st.write("")
     st.markdown('<div class="section-label">Spreads</div>', unsafe_allow_html=True)
     with st.container(border=True):
-        # 1. Generate dynamic rows starting ~40 points out of the money
-        base_strike = int(spx_last / 10) * 10 - 40 
-        
         spreads_list = []
-        for i in range(8): # Create spreads rows
-            strike = base_strike - (i * 10)
-            leg = strike - spread_width
-            pts_out = strike - spx_last
-            pct_out = (pts_out / spx_last) * 100
+        num_rows_to_show = 12
+        valid_rows_found = 0
+        
+        # Loop through the real, live OTM puts
+        for index, short_put in live_puts_df.iterrows():
+            if valid_rows_found >= num_rows_to_show:
+                break
+                
+            short_strike = short_put['strike']
+            long_strike = short_strike - spread_width
             
-            # Simulating realistic option prices dropping as they get further out of the money
-            short_px = max(0.50, 4.00 - (i * 0.60)) 
-            long_px = max(0.10, 1.50 - (i * 0.20))
-            spread_price = short_px - long_px
+            # Search the chain to see if the long leg exists
+            long_put_match = live_puts_df[live_puts_df['strike'] == long_strike]
             
-            # --- THE MATH FOR PREMIUMS ---
-            # Spread price * Contracts * 100
-            total_premium = spread_price * contracts * 100
-            
-            spreads_list.append({
-                "Pts": int(pts_out),
-                "(%)": f"{pct_out:.1f}%",
-                "Strike": int(strike),
-                "Leg": int(leg),
-                "Short PX": short_px,
-                "Long PX": long_px,
-                "Spread": spread_price,
-                "Premiums": total_premium # Store as raw number for math
-            })
-            
+            if not long_put_match.empty:
+                long_put = long_put_match.iloc[0]
+                
+                # Extract the live prices (using lastPrice)
+                short_px = short_put['lastPrice']
+                long_px = long_put['lastPrice']
+                spread_price = short_px - long_px
+                
+                # Free data sometimes has stale pricing resulting in negative spreads. Skip those!
+                if spread_price <= 0:
+                    continue
+                    
+                # Calculate the math
+                pts_out = abs(short_strike - spx_last)
+                pct_out = (pts_out / spx_last) * 100
+                total_premium = spread_price * contracts * 100
+                
+                spreads_list.append({
+                    "Pts": int(pts_out),
+                    "(%)": f"{pct_out:.1f}%",
+                    "Strike": int(short_strike),
+                    "Leg": int(long_strike),
+                    "Short PX": short_px,
+                    "Long PX": long_px,
+                    "Spread": spread_price,
+                    "Premiums": total_premium
+                })
+                
+                valid_rows_found += 1
+                
+        # Create the dataframe
         df_spreads = pd.DataFrame(spreads_list)
         
         # 2. Dynamic Highlight Logic: Highlight ANY row that hits the Target Profit
@@ -252,12 +289,36 @@ with col_right:
                 annotation=dict(font_size=8, font_color="white", bgcolor="#FF6347", borderpad=3, bordercolor="#FF6347")
             )
             
-        # 5. Apply layout using the padded_max_date
+        # 5. Apply layout and add Interactive Crosshairs
         fig.update_layout(
             height=350, margin=dict(l=0, r=0, t=10, b=0), 
             plot_bgcolor="white", paper_bgcolor="white",
-            xaxis=dict(showgrid=True, gridcolor="#F0F0F0", range=[min_date, padded_max_date]),
-            yaxis=dict(showgrid=True, gridcolor="#F0F0F0", side="left")
+            hovermode="x unified",
+            
+            # --- THE NEW HOVER RULES ---
+            hoverdistance=-1,   # Shows tooltip anywhere on the chart
+            spikedistance=-1,   # Shows spikes anywhere on the chart
+            # --- THE FAUX-FROSTED TOOLTIP ---
+            hoverlabel=dict(
+                bgcolor="rgba(255, 255, 255, 0.85)", # Semi-transparent white
+                bordercolor="rgba(0, 0, 0, 0)",               # Light gray border to define the edges
+                font=dict(color="#1E1E1E")           # Dark text
+            ),
+            
+            xaxis=dict(
+                showgrid=True, gridcolor="#F0F0F0", range=[min_date, padded_max_date],
+                showspikes=True, spikemode="across", spikesnap="cursor", 
+                spikedash="1, 3",     
+                spikecolor="#B2B2B2", 
+                spikethickness=1
+            ),
+            yaxis=dict(
+                showgrid=True, gridcolor="#F0F0F0", side="left",
+                showspikes=True, spikemode="across", spikesnap="cursor",
+                spikedash="1, 3",     
+                spikecolor="#B2B2B2", 
+                spikethickness=1
+            )
         )
         return fig
 
