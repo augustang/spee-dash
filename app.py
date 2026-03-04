@@ -159,14 +159,9 @@ with col_left:
     st.markdown('<div class="section-label">Spreads</div>', unsafe_allow_html=True)
     with st.container(border=True):
         spreads_list = []
-        num_rows_to_show = 12
-        valid_rows_found = 0
         
-        # Loop through the real, live OTM puts
+        # 1. Loop through ALL real, live OTM puts to build our master list
         for index, short_put in live_puts_df.iterrows():
-            if valid_rows_found >= num_rows_to_show:
-                break
-                
             short_strike = short_put['strike']
             long_strike = short_strike - spread_width
             
@@ -176,7 +171,7 @@ with col_left:
             if not long_put_match.empty:
                 long_put = long_put_match.iloc[0]
                 
-                # Extract the live prices (using lastPrice)
+                # Extract the live prices
                 short_px = short_put['lastPrice']
                 long_px = long_put['lastPrice']
                 spread_price = short_px - long_px
@@ -201,10 +196,21 @@ with col_left:
                     "Premiums": total_premium
                 })
                 
-                valid_rows_found += 1
+        # 2. Find the "Goldilocks" index (lowest risk that still meets the target)
+        optimal_index = 0
+        for i, spread in enumerate(spreads_list):
+            if spread['Premiums'] >= target_profit:
+                optimal_index = i
+            else:
+                break # The moment we dip below the target profit, we stop searching!
                 
-        # Create the dataframe
-        df_spreads = pd.DataFrame(spreads_list)
+        # 3. Slice the list to center the table around our target
+        # Show 5 rows above (riskier) and 5 rows below (safer/fails target)
+        start_idx = max(0, optimal_index - 5)
+        end_idx = min(len(spreads_list), optimal_index + 6)
+        
+        # Create the dataframe from just that optimized slice!
+        df_spreads = pd.DataFrame(spreads_list[start_idx:end_idx])
         
         # 2. Dynamic Highlight Logic: Highlight ANY row that hits the Target Profit
         def highlight_target(row):
@@ -224,9 +230,15 @@ with col_left:
             styled_df, 
             hide_index=True, 
             use_container_width=True,
-            on_select="rerun",
+            on_select="rerun",           # This tells the app to refresh when a box is checked!
             selection_mode="single-row"
         )
+        
+        # --- NEW: Grab the price of the selected spread ---
+        selected_spread_px = 0.00
+        if len(selection_event.selection.rows) > 0:
+            selected_idx = selection_event.selection.rows[0]
+            selected_spread_px = df_spreads.iloc[selected_idx]['Spread']
         
         selected_short = None
         selected_long = None
@@ -235,11 +247,30 @@ with col_left:
             selected_short = df_spreads.iloc[selected_idx]['Strike']
             selected_long = df_spreads.iloc[selected_idx]['Leg']
 
-    st.write("")
+    # --- CURRENT TRADE SECTION ---
+    st.write("") # Add a little spacing
     st.markdown('<div class="section-label">Current trade</div>', unsafe_allow_html=True)
+    
     with st.container(border=True):
-        trade_data = {"Entry PX": [2.50], "Current PX": [2.10], "Realistic Close": [0.50], "Realistic P/L": ["+$6,000"]}
-        st.dataframe(pd.DataFrame(trade_data), hide_index=True, use_container_width=True)
+        col1, col2, col3, col4 = st.columns(4)
+        
+        # 1. Entry PX defaults to the selected row's price (editable in case they got a different fill)
+        entry_px = col1.number_input("Entry PX", value=float(selected_spread_px), step=0.05)
+        
+        # 2. Current PX is strictly the live mark from the table (disabled so it can't be edited)
+        col2.number_input("Current PX", value=float(selected_spread_px), disabled=True)
+        
+        # 3. Realistic Close for scenario testing
+        realistic_close = col3.number_input("Realistic Close", value=0.50, step=0.05)
+        
+        # 4. The Math: (Credit Received - Debit Paid) * Contracts * 100
+        realistic_pl = (entry_px - realistic_close) * contracts * 100
+        
+        # Display the result (formatting it to show the + sign for profits)
+        pl_string = f"+${realistic_pl:,.0f}" if realistic_pl >= 0 else f"-${abs(realistic_pl):,.0f}"
+        
+        # Using a disabled text input here so it visually matches the clean grid look of the other inputs
+        col4.text_input("Realistic P/L", value=pl_string, disabled=True)
 
 with col_right:
     # Chart generation function
@@ -321,6 +352,7 @@ with col_right:
             )
         )
         return fig
+    
 
     # 5 Day Segmented Control & Chart
     day_option = st.segmented_control("Day Chart Options", ["5 Day chart", "3 Day chart", "1 Day chart"], default="5 Day chart", label_visibility="collapsed")
