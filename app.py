@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import datetime
 import pytz
 import yfinance as yf
+import math
 
 # 1. Page Setup & Load CSS
 st.set_page_config(page_title="SPX Dashboard", layout="wide")
@@ -248,28 +249,25 @@ with col_left:
             selected_long = df_spreads.iloc[selected_idx]['Leg']
 
     # --- CURRENT TRADE SECTION ---
-    st.write("") # Add a little spacing
+    st.write("") 
     st.markdown('<div class="section-label">Current trade</div>', unsafe_allow_html=True)
+    
+    # The Math Trick: Round current price UP to the nearest 0.05 increment
+    default_realistic_close = math.ceil(selected_spread_px * 20) / 20.0
     
     with st.container(border=True):
         col1, col2, col3, col4 = st.columns(4)
         
-        # 1. Entry PX defaults to the selected row's price (editable in case they got a different fill)
         entry_px = col1.number_input("Entry PX", value=float(selected_spread_px), step=0.05)
-        
-        # 2. Current PX is strictly the live mark from the table (disabled so it can't be edited)
         col2.number_input("Current PX", value=float(selected_spread_px), disabled=True)
         
-        # 3. Realistic Close for scenario testing
-        realistic_close = col3.number_input("Realistic Close", value=0.50, step=0.05)
+        # Drop our dynamic default value right into the input!
+        realistic_close = col3.number_input("Realistic Close", value=float(default_realistic_close), step=0.05)
         
-        # 4. The Math: (Credit Received - Debit Paid) * Contracts * 100
         realistic_pl = (entry_px - realistic_close) * contracts * 100
         
-        # Display the result (formatting it to show the + sign for profits)
         pl_string = f"+${realistic_pl:,.0f}" if realistic_pl >= 0 else f"-${abs(realistic_pl):,.0f}"
         
-        # Using a disabled text input here so it visually matches the clean grid look of the other inputs
         col4.text_input("Realistic P/L", value=pl_string, disabled=True)
 
 with col_right:
