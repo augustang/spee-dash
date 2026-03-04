@@ -73,6 +73,31 @@ def get_spx_history(period, interval):
 
 spx_last, spx_open, delta_string = get_spx_metrics()
 
+# 1. Fetch the data (last 5 days to ensure we have yesterday's close)
+spx_data = yf.Ticker("^GSPC").history(period="5d")
+vix_data = yf.Ticker("^VIX").history(period="1d")
+vix9d_data = yf.Ticker("^VIX9D").history(period="1d")
+
+# 2. Extract the exact numbers you need
+spx_prior_close = spx_data['Close'].iloc[-2]  # The second to last item is yesterday's close
+vix_last = vix_data['Close'].iloc[-1]
+vix9d_last = vix9d_data['Close'].iloc[-1]
+
+# Fetch live data for the prior close and VIX metrics
+spx_data = yf.Ticker("^GSPC").history(period="5d")
+vix_data = yf.Ticker("^VIX").history(period="1d")
+vix9d_data = yf.Ticker("^VIX9D").history(period="1d")
+
+spx_prior_close = spx_data['Close'].iloc[-2] 
+vix_last = vix_data['Close'].iloc[-1]
+vix9d_last = vix9d_data['Close'].iloc[-1]
+
+# Calculate the dynamic change string
+change_pts = spx_last - spx_prior_close
+change_pct = (change_pts / spx_prior_close) * 100
+arrow = "↑" if change_pts >= 0 else "↓"
+prior_delta_string = f"{arrow} {abs(change_pts):.2f} pts ({abs(change_pct):.2f}%)"
+
 # 4. Main Layout Columns
 col_left, col_right = st.columns([1.3, 2.7], gap="medium")
 
@@ -80,18 +105,20 @@ with col_left:
     st.markdown('<div class="section-label">Metrics</div>', unsafe_allow_html=True)
     with st.container(border=True):
         m1, m2, m3 = st.columns(3)
-        m1.metric(label="SPX Open", value=f"{spx_open:,.2f}")
-        m2.metric(label="SPX Last", value=f"{spx_last:,.2f}")
+        # These are live variables, so we use the f-string formatting
+        m1.metric(label="SPX Open", value=f"{spx_open:,.0f}")
+        m2.metric(label="SPX Last", value=f"{spx_last:,.0f}")
         m3.metric(label="Change from open", value="", delta=delta_string)
         
         st.write("")
         
         m4, m5, m6 = st.columns(3)
-        m4.metric(label="SPX Prior Close", value="6900.00") # Placeholder
+        # Now these are using live data!
+        m4.metric(label="SPX Prior Close", value=f"{spx_prior_close:,.0f}") 
         v1, v2 = m5.columns(2)
-        v1.metric(label="VIX9D", value="19.00") # Placeholder
-        v2.metric(label="VIX", value="21.00") # Placeholder
-        m6.metric(label="Change from prior close", value="", delta="↑ 20 pts (0.2%)") # Placeholder
+        v1.metric(label="VIX9D", value=f"{vix9d_last:,.0f}") 
+        v2.metric(label="VIX", value=f"{vix_last:,.0f}") 
+        m6.metric(label="Change from prior close", value="", delta=prior_delta_string)
 
         st.write("")
         
