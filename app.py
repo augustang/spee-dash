@@ -359,8 +359,13 @@ with col_right:
 
     # 4. Day Chart Section
     day_option = st.segmented_control("Day Chart Options", ["5 Day chart", "3 Day chart", "1 Day chart"], default="5 Day chart", label_visibility="collapsed")
+    
+    if day_option is None:
+        day_option = "5 Day chart"
+    
     day_params = {"5 Day chart": "5d", "3 Day chart": "3d", "1 Day chart": "1d"}
     df_day = get_spx_history(period=day_params[day_option], interval="5m")
+
 
     # --- NEW: Chart Color Logic based on "Change from open" ---
     is_spx_down = (spx_last - spx_open) < 0
@@ -378,6 +383,10 @@ with col_right:
 
     # 5. Month Chart Section
     month_option = st.segmented_control("Month Chart Options", ["6 Month SPX", "3 Month SPX", "1 Month SPX"], default="6 Month SPX", label_visibility="collapsed")
+    
+    if month_option is None:
+        month_option = "6 Month SPX"
+    
     month_params = {"6 Month SPX": "6mo", "3 Month SPX": "3mo", "1 Month SPX": "1mo"}
     df_month = get_spx_history(period=month_params[month_option], interval="1d")
 
