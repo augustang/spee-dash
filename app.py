@@ -6,11 +6,7 @@ import datetime
 import pytz
 import yfinance as yf
 import math
-from streamlit_autorefresh import st_autorefresh
-
-# --- AUTO-REFRESH TIMER ---
-# Refreshes the page every 60 seconds (60000 milliseconds)
-st_autorefresh(interval=60000, limit=None, key="dashboard_refresh")
+import time
 
 # 1. Page Setup & Load CSS
 st.set_page_config(page_title="SPX Dashboard", layout="wide")
@@ -397,3 +393,10 @@ with col_right:
             # --- NEW: Added scrollZoom to the config! ---
             config={'displayModeBar': False, 'scrollZoom': True} 
         )
+
+# ... (Your Month Chart Section ends above this) ...
+
+# --- NATIVE AUTO-REFRESH ---
+# Pause the script for 60 seconds, then force Streamlit to rerun from the top!
+time.sleep(60)
+st.rerun()
