@@ -63,6 +63,7 @@ div[data-testid="stMetricDelta"] > div {
 }
 
 /* fyi this is auto generated class by streamlit; reinspect and update if you update streamlit version */
+/* Streamlit app toolbar */
 .st-emotion-cache-14vh5up {
     background-color: #F4F4F4 !important;
 }
@@ -150,23 +151,6 @@ div[data-testid="stMetricDelta"] svg {
 .st-emotion-cache-1py5frv {
     background-color:#F1F2F6 !important;
 }
-
-/* 3. SEGMENTED CONTROLS and SECTION LABELS spacing */
-
-/* 3. SEGMENTED CONTROLS: Change from red to dark gray/black - this is not working lol */
-/* div[data-testid="stSegmentedControl"] {
-    background-color: #F4F4F4 !important;
-    border-radius: 20px !important;
-    padding: 2px !important;
-}
-div[data-testid="stSegmentedControl"] label[data-selected="true"] {
-    background-color: #1E1E1E !important;
-    color: white !important;
-    border-radius: 16px !important;
-}
-div[data-testid="stSegmentedControl"] label[data-selected="false"] {
-    color: #666 !important;
-} */
 
 /* Tweak the dataframe */
 div[data-testid="stDataFrame"] {

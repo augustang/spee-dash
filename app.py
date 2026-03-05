@@ -8,6 +8,14 @@ import yfinance as yf
 import math
 import time
 
+# --- INITIALIZE SESSION STATE MEMORY ---
+if 'selected_short' not in st.session_state:
+    st.session_state.selected_short = None
+if 'selected_long' not in st.session_state:
+    st.session_state.selected_long = None
+if 'selected_spread_px' not in st.session_state:
+    st.session_state.selected_spread_px = 0.00
+
 # 1. Page Setup & Load CSS
 st.set_page_config(page_title="SPX Dashboard", layout="wide")
 
@@ -149,16 +157,16 @@ with col_left:
         st.write("")
         
         in1, in2 = st.columns(2)
-        buying_power = in1.number_input("Buying power ($)", value=150000, step=10000, format="%d")
-        spread_width = in2.selectbox("Spread width", [10, 25, 50, 100], index=2)
+        # Adding a 'key' makes the field immortal during auto-refreshes!
+        buying_power = in1.number_input("Buying power ($)", value=150000, step=10000, format="%d", key="saved_bp")
+        spread_width = in2.selectbox("Spread width", [10, 25, 50, 100], index=0, key="saved_spread")
         
         # --- THE MATH FOR CONTRACTS ---
-        # Buying Power / (Spread Width * 100)
         calc_contracts = int(buying_power / (spread_width * 100))
         
         in3, in4 = st.columns(2)
-        contracts = in3.number_input("Contracts", value=calc_contracts, step=1)
-        target_profit = in4.number_input("Target profit ($)", value=1500, step=100)
+        contracts = in3.number_input("Contracts", value=calc_contracts, step=1, key="saved_contracts")
+        target_profit = in4.number_input("Target profit ($)", value=1500, step=100, key="saved_target")
 
     st.write("")
     st.markdown('<div class="section-label">Spreads</div>', unsafe_allow_html=True)
@@ -238,8 +246,20 @@ with col_left:
             on_select="rerun",           # This tells the app to refresh when a box is checked!
             selection_mode="single-row"
         )
+
+        # --- Save the selection to permanent memory! ---
+        if len(selection_event.selection.rows) > 0:
+            selected_idx = selection_event.selection.rows[0]
+            st.session_state.selected_spread_px = df_spreads.iloc[selected_idx]['Spread']
+            st.session_state.selected_short = df_spreads.iloc[selected_idx]['Strike']
+            st.session_state.selected_long = df_spreads.iloc[selected_idx]['Leg']
+            
+        # Pull the values BACK OUT of memory to use in the rest of the app
+        selected_short = st.session_state.selected_short
+        selected_long = st.session_state.selected_long
+        selected_spread_px = st.session_state.selected_spread_px
         
-        # --- NEW: Grab the price of the selected spread ---
+        # --- Grab the price of the selected spread ---
         selected_spread_px = 0.00
         if len(selection_event.selection.rows) > 0:
             selected_idx = selection_event.selection.rows[0]
@@ -256,17 +276,21 @@ with col_left:
     st.write("") 
     st.markdown('<div class="section-label">Current trade</div>', unsafe_allow_html=True)
     
-    # The Math Trick: Round current price UP to the nearest 0.05 increment
-    default_realistic_close = math.ceil(selected_spread_px * 20) / 20.0
+    # The Math Trick (with a safety net so it doesn't divide by zero before you click a spread!)
+    if selected_spread_px > 0:
+        default_realistic_close = math.ceil(selected_spread_px * 20) / 20.0
+    else:
+        default_realistic_close = 0.00
     
     with st.container(border=True):
         col1, col2, col3, col4 = st.columns(4)
         
-        entry_px = col1.number_input("Entry PX", value=float(selected_spread_px), step=0.05)
+        # --- NEW: Added key="saved_entry" to lock it in memory ---
+        entry_px = col1.number_input("Entry PX", value=float(selected_spread_px), step=0.05, key="saved_entry")
         col2.number_input("Current PX", value=float(selected_spread_px), disabled=True)
         
-        # Drop our dynamic default value right into the input!
-        realistic_close = col3.number_input("Realistic Close", value=float(default_realistic_close), step=0.05)
+        # --- NEW: Added key="saved_close" to lock it in memory ---
+        realistic_close = col3.number_input("Realistic Close", value=float(default_realistic_close), step=0.05, key="saved_close")
         
         realistic_pl = (entry_px - realistic_close) * contracts * 100
         
@@ -279,35 +303,35 @@ with col_right:
     def create_spx_chart(title, prices, dates, line_color, halo_color):
         fig = go.Figure()
         
-        # 2. Main line trace (Now using dynamic line_color)
+        # Main line trace
         fig.add_trace(go.Scatter(
             x=dates, y=prices, mode='lines', 
-            line=dict(color=line_color, width=2), # <-- Updated!
+            line=dict(color=line_color, width=2),
             showlegend=False
         ))
         
-        # 3. Add the "Current Position" glowing dot (Now using dynamic colors)
+        # Add the "Current Position" glowing dot
         if len(dates) > 0 and len(prices) > 0:
             last_date = dates[-1]
             last_price = prices.iloc[-1]
             fig.add_trace(go.Scatter(
                 x=[last_date], y=[last_price], mode='markers',
                 marker=dict(
-                    color=line_color, # <-- Updated!
+                    color=line_color, 
                     size=4, 
-                    # Halo color (30% opacity)
-                    line=dict(color=halo_color, width=8) # <-- Updated!
+                    line=dict(color=halo_color, width=8) 
                 ),
                 showlegend=False,
                 hoverinfo='skip'
             ))
             
-        # ... Rest of chart logic (breathing room, strike lines, layout) ...
+        # Calculate 5% breathing room
         min_date = dates.min()
         max_date = dates.max()
         date_range = max_date - min_date
         padded_max_date = max_date + (date_range * 0.05)
         
+        # Interactive strike lines
         if selected_short is not None and selected_long is not None:
             fig.add_hline(
                 y=selected_short, line_dash="solid", line_color="#4B7BFF", 
@@ -322,11 +346,11 @@ with col_right:
                 annotation=dict(font_size=8, font_color="white", bgcolor="#FF6347", borderpad=3, bordercolor="#FF6347")
             )
             
+        # Layout rules (with the trackpad pan/zoom fixes!)
         fig.update_layout(
             dragmode="pan",
-            uirevision="constant", # <-- THE MAGIC ZOOM SAVER!
+            uirevision="constant", 
             height=350, 
-            # --- FIXED MARGINS TO PREVENT THE SQUISH BUG ---
             margin=dict(l=60, r=20, t=10, b=30), 
             plot_bgcolor="white", paper_bgcolor="white",
             hovermode="x unified",
@@ -337,14 +361,13 @@ with col_right:
                 bordercolor="rgba(0, 0, 0, 0)",
                 font=dict(color="#1E1E1E")
             ),
-            
             xaxis=dict(
                 showgrid=True, gridcolor="#F0F0F0", range=[min_date, padded_max_date],
                 showspikes=True, spikemode="across", spikesnap="cursor", spikedash="1, 3",     
                 spikecolor="#B2B2B2", spikethickness=1
             ),
             yaxis=dict(
-                automargin=False, # <-- STOPS PLOTLY FROM OVER-CALCULATING ON SCROLL
+                automargin=False, 
                 showgrid=True, gridcolor="#F0F0F0", side="left",
                 showspikes=True, spikemode="across", spikesnap="cursor", spikedash="1, 3",     
                 spikecolor="#B2B2B2", spikethickness=1
@@ -355,34 +378,25 @@ with col_right:
 
     # 4. Day Chart Section
     day_option = st.segmented_control("Day Chart Options", ["5 Day chart", "3 Day chart", "1 Day chart"], default="5 Day chart", label_visibility="collapsed")
-    
-    if day_option is None:
-        day_option = "5 Day chart"
-    
+    if day_option is None: day_option = "5 Day chart"
     day_params = {"5 Day chart": "5d", "3 Day chart": "3d", "1 Day chart": "1d"}
     df_day = get_spx_history(period=day_params[day_option], interval="5m")
 
-
-    # --- NEW: Chart Color Logic based on "Change from open" ---
+    # Chart Color Logic based on "Change from open"
     is_spx_down = (spx_last - spx_open) < 0
-    spx_theme_color = "#FF4646" if is_spx_down else "#11F185" # <-- Updated to your specific red!
-    # Specific RGBA red (255, 70, 70) at 30% opacity for the halo
-    spx_halo_color = 'rgba(255, 70, 70, 0.3)' if is_spx_down else 'rgba(17, 241, 133, 0.3)'
+    spx_theme_color = "#FF3D54" if is_spx_down else "#11F185" 
+    spx_halo_color = 'rgba(255, 61, 84, 0.3)' if is_spx_down else 'rgba(17, 241, 133, 0.3)'
 
     with st.container(border=True):
         st.plotly_chart(
             create_spx_chart(day_option, df_day['Close'], df_day.index, spx_theme_color, spx_halo_color), 
             use_container_width=True,
-            # --- NEW: Added scrollZoom to the config! ---
             config={'displayModeBar': False, 'scrollZoom': True} 
         )
 
     # 5. Month Chart Section
     month_option = st.segmented_control("Month Chart Options", ["6 Month SPX", "3 Month SPX", "1 Month SPX"], default="6 Month SPX", label_visibility="collapsed")
-    
-    if month_option is None:
-        month_option = "6 Month SPX"
-    
+    if month_option is None: month_option = "6 Month SPX"
     month_params = {"6 Month SPX": "6mo", "3 Month SPX": "3mo", "1 Month SPX": "1mo"}
     df_month = get_spx_history(period=month_params[month_option], interval="1d")
 
@@ -390,13 +404,9 @@ with col_right:
         st.plotly_chart(
             create_spx_chart(month_option, df_month['Close'], df_month.index, spx_theme_color, spx_halo_color), 
             use_container_width=True,
-            # --- NEW: Added scrollZoom to the config! ---
             config={'displayModeBar': False, 'scrollZoom': True} 
         )
 
-# ... (Your Month Chart Section ends above this) ...
-
 # --- NATIVE AUTO-REFRESH ---
-# Pause the script for 60 seconds, then force Streamlit to rerun from the top!
 time.sleep(60)
 st.rerun()
