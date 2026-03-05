@@ -89,21 +89,6 @@ spx_prior_close = spx_data['Close'].iloc[-2]  # The second to last item is yeste
 vix_last = vix_data['Close'].iloc[-1]
 vix9d_last = vix9d_data['Close'].iloc[-1]
 
-# Fetch live data for the prior close and VIX metrics
-spx_data = yf.Ticker("^GSPC").history(period="5d")
-vix_data = yf.Ticker("^VIX").history(period="1d")
-vix9d_data = yf.Ticker("^VIX9D").history(period="1d")
-
-spx_prior_close = spx_data['Close'].iloc[-2] 
-vix_last = vix_data['Close'].iloc[-1]
-vix9d_last = vix9d_data['Close'].iloc[-1]
-
-# Calculate the dynamic change string
-change_pts = spx_last - spx_prior_close
-change_pct = (change_pts / spx_prior_close) * 100
-arrow = "↑" if change_pts >= 0 else "↓"
-prior_delta_string = f"{arrow} {abs(change_pts):.2f} pts ({abs(change_pct):.2f}%)"
-
 # --- FETCH LIVE OPTIONS DATA ---
 @st.cache_data(ttl=60) # Caches the data for 60 seconds to keep the app fast
 def get_spx_puts(current_price):
@@ -135,7 +120,16 @@ with col_left:
         # These are live variables, so we use the f-string formatting
         m1.metric(label="SPX Open", value=f"{spx_open:,.0f}")
         m2.metric(label="SPX Last", value=f"{spx_last:,.0f}")
-        m3.metric(label="Change from open", value="", delta=delta_string)
+        
+        # --- CUSTOM PILL: Change from open ---
+        with m3:
+            st.markdown('<p style="font-size: 12px; color: #000000; margin-bottom: -10px;">Change from open</p>', unsafe_allow_html=True)
+            pts_change = spx_last - spx_open
+            pct_change = (pts_change / spx_open) * 100
+            bg = "#6DF08C" if pts_change >= 0 else "#FF4646"
+            text = "#000000" if pts_change >= 0 else "#FFFFFF"
+            arr = "↑" if pts_change >= 0 else "↓"
+            st.markdown(f'<div style="background-color: {bg}; color: {text}; padding: 4px 8px; border-radius: 8px; display: inline-block; font-weight: 400; font-size: 12px; margin-top: 10px;">{arr} {abs(pts_change):.2f} pts ({abs(pct_change):.2f}%)</div>', unsafe_allow_html=True)
         
         st.write("")
         
@@ -145,13 +139,22 @@ with col_left:
         v1, v2 = m5.columns(2)
         v1.metric(label="VIX9D", value=f"{vix9d_last:,.0f}") 
         v2.metric(label="VIX", value=f"{vix_last:,.0f}") 
-        m6.metric(label="Change from prior close", value="", delta=prior_delta_string)
+        
+        # --- CUSTOM PILL: Change from prior close ---
+        with m6:
+            st.markdown('<p style="font-size: 12px; color: #000000; margin-bottom: -10px;">Change from prior close</p>', unsafe_allow_html=True)
+            prior_pts = spx_last - spx_prior_close
+            prior_pct = (prior_pts / spx_prior_close) * 100
+            bg2 = "#6DF08C" if prior_pts >= 0 else "#FF4646"
+            text2 = "#000000" if prior_pts >= 0 else "#FFFFFF"
+            arr2 = "↑" if prior_pts >= 0 else "↓"
+            st.markdown(f'<div style="background-color: {bg2}; color: {text2}; padding: 4px 8px; border-radius: 8px; display: inline-block; font-weight: 400; font-size: 12px; margin-top: 10px;">{arr2} {abs(prior_pts):.2f} pts ({abs(prior_pct):.2f}%)</div>', unsafe_allow_html=True)
 
         st.write("")
         
         in1, in2 = st.columns(2)
         buying_power = in1.number_input("Buying power ($)", value=150000, step=10000, format="%d")
-        spread_width = in2.selectbox("Spread width", [10, 25, 50, 100], index=0)
+        spread_width = in2.selectbox("Spread width", [10, 25, 50, 100], index=2)
         
         # --- THE MATH FOR CONTRACTS ---
         # Buying Power / (Spread Width * 100)
@@ -276,39 +279,39 @@ with col_left:
         col4.text_input("Realistic P/L", value=pl_string, disabled=True)
 
 with col_right:
-    # Chart generation function
-    def create_spx_chart(title, prices, dates):
+    # 1. Update function signature to accept color parameters
+    def create_spx_chart(title, prices, dates, line_color, halo_color):
         fig = go.Figure()
         
-        # 1. Main line trace
+        # 2. Main line trace (Now using dynamic line_color)
         fig.add_trace(go.Scatter(
             x=dates, y=prices, mode='lines', 
-            line=dict(color='#11F185', width=2),
+            line=dict(color=line_color, width=2), # <-- Updated!
             showlegend=False
         ))
         
-        # 2. Add the "Current Position" glowing dot
+        # 3. Add the "Current Position" glowing dot (Now using dynamic colors)
         if len(dates) > 0 and len(prices) > 0:
             last_date = dates[-1]
             last_price = prices.iloc[-1]
             fig.add_trace(go.Scatter(
                 x=[last_date], y=[last_price], mode='markers',
                 marker=dict(
-                    color='#11F185', 
+                    color=line_color, # <-- Updated!
                     size=4, 
-                    line=dict(color='rgba(17, 241, 133, 0.3)', width=8) # The soft halo
+                    # Halo color (30% opacity)
+                    line=dict(color=halo_color, width=8) # <-- Updated!
                 ),
                 showlegend=False,
                 hoverinfo='skip'
             ))
             
-        # 3. Calculate 5% breathing room
+        # ... Rest of chart logic (breathing room, strike lines, layout) ...
         min_date = dates.min()
         max_date = dates.max()
         date_range = max_date - min_date
         padded_max_date = max_date + (date_range * 0.05)
         
-        # 4. Interactive strike lines
         if selected_short is not None and selected_long is not None:
             fig.add_hline(
                 y=selected_short, line_dash="solid", line_color="#4B7BFF", 
@@ -323,60 +326,60 @@ with col_right:
                 annotation=dict(font_size=8, font_color="white", bgcolor="#FF6347", borderpad=3, bordercolor="#FF6347")
             )
             
-        # 5. Apply layout and add Interactive Crosshairs
         fig.update_layout(
             height=350, margin=dict(l=0, r=0, t=10, b=0), 
             plot_bgcolor="white", paper_bgcolor="white",
             hovermode="x unified",
-            
-            # --- THE NEW HOVER RULES ---
-            hoverdistance=-1,   # Shows tooltip anywhere on the chart
-            spikedistance=-1,   # Shows spikes anywhere on the chart
-            # --- THE FAUX-FROSTED TOOLTIP ---
+            hoverdistance=-1,
+            spikedistance=-1,
             hoverlabel=dict(
                 bgcolor="rgba(255, 255, 255, 0.85)", # Semi-transparent white
-                bordercolor="rgba(0, 0, 0, 0)",               # Light gray border to define the edges
-                font=dict(color="#1E1E1E")           # Dark text
+                bordercolor="rgba(0, 0, 0, 0)",
+                font=dict(color="#1E1E1E")
             ),
             
             xaxis=dict(
                 showgrid=True, gridcolor="#F0F0F0", range=[min_date, padded_max_date],
-                showspikes=True, spikemode="across", spikesnap="cursor", 
-                spikedash="1, 3",     
-                spikecolor="#B2B2B2", 
-                spikethickness=1
+                showspikes=True, spikemode="across", spikesnap="cursor", spikedash="1, 3",     
+                spikecolor="#B2B2B2", spikethickness=1
             ),
             yaxis=dict(
                 showgrid=True, gridcolor="#F0F0F0", side="left",
-                showspikes=True, spikemode="across", spikesnap="cursor",
-                spikedash="1, 3",     
-                spikecolor="#B2B2B2", 
-                spikethickness=1
+                showspikes=True, spikemode="across", spikesnap="cursor", spikedash="1, 3",     
+                spikecolor="#B2B2B2", spikethickness=1
             )
         )
         return fig
     
 
-    # 5 Day Segmented Control & Chart
+    # 4. Day Chart Section
     day_option = st.segmented_control("Day Chart Options", ["5 Day chart", "3 Day chart", "1 Day chart"], default="5 Day chart", label_visibility="collapsed")
     day_params = {"5 Day chart": "5d", "3 Day chart": "3d", "1 Day chart": "1d"}
     df_day = get_spx_history(period=day_params[day_option], interval="5m")
 
+    # --- NEW: Chart Color Logic based on "Change from open" ---
+    is_spx_down = (spx_last - spx_open) < 0
+    spx_theme_color = "#FF4646" if is_spx_down else "#11F185" # <-- Updated to your specific red!
+    # Specific RGBA red (255, 70, 70) at 30% opacity for the halo
+    spx_halo_color = 'rgba(255, 70, 70, 0.3)' if is_spx_down else 'rgba(17, 241, 133, 0.3)'
+
     with st.container(border=True):
         st.plotly_chart(
-            create_spx_chart(day_option, df_day['Close'], df_day.index), 
+            # Pass the dynamic colors to the function!
+            create_spx_chart(day_option, df_day['Close'], df_day.index, spx_theme_color, spx_halo_color), 
             use_container_width=True,
-            config={'displayModeBar': False} # <-- Hides the menu
+            config={'displayModeBar': False}
         )
 
-    # 6 Month Segmented Control & Chart
+    # 5. Month Chart Section
     month_option = st.segmented_control("Month Chart Options", ["6 Month SPX", "3 Month SPX", "1 Month SPX"], default="6 Month SPX", label_visibility="collapsed")
     month_params = {"6 Month SPX": "6mo", "3 Month SPX": "3mo", "1 Month SPX": "1mo"}
     df_month = get_spx_history(period=month_params[month_option], interval="1d")
 
     with st.container(border=True):
         st.plotly_chart(
-            create_spx_chart(month_option, df_month['Close'], df_month.index), 
+            # Pass the dynamic colors here too!
+            create_spx_chart(month_option, df_month['Close'], df_month.index, spx_theme_color, spx_halo_color), 
             use_container_width=True,
-            config={'displayModeBar': False} # <-- Hides the menu
+            config={'displayModeBar': False}
         )
