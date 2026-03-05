@@ -327,13 +327,17 @@ with col_right:
             )
             
         fig.update_layout(
-            height=350, margin=dict(l=0, r=0, t=10, b=0), 
+            dragmode="pan",
+            uirevision="constant", # <-- THE MAGIC ZOOM SAVER!
+            height=350, 
+            # --- FIXED MARGINS TO PREVENT THE SQUISH BUG ---
+            margin=dict(l=60, r=20, t=10, b=30), 
             plot_bgcolor="white", paper_bgcolor="white",
             hovermode="x unified",
             hoverdistance=-1,
             spikedistance=-1,
             hoverlabel=dict(
-                bgcolor="rgba(255, 255, 255, 0.85)", # Semi-transparent white
+                bgcolor="rgba(255, 255, 255, 0.85)", 
                 bordercolor="rgba(0, 0, 0, 0)",
                 font=dict(color="#1E1E1E")
             ),
@@ -344,6 +348,7 @@ with col_right:
                 spikecolor="#B2B2B2", spikethickness=1
             ),
             yaxis=dict(
+                automargin=False, # <-- STOPS PLOTLY FROM OVER-CALCULATING ON SCROLL
                 showgrid=True, gridcolor="#F0F0F0", side="left",
                 showspikes=True, spikemode="across", spikesnap="cursor", spikedash="1, 3",     
                 spikecolor="#B2B2B2", spikethickness=1
@@ -365,10 +370,10 @@ with col_right:
 
     with st.container(border=True):
         st.plotly_chart(
-            # Pass the dynamic colors to the function!
             create_spx_chart(day_option, df_day['Close'], df_day.index, spx_theme_color, spx_halo_color), 
             use_container_width=True,
-            config={'displayModeBar': False}
+            # --- NEW: Added scrollZoom to the config! ---
+            config={'displayModeBar': False, 'scrollZoom': True} 
         )
 
     # 5. Month Chart Section
@@ -378,8 +383,8 @@ with col_right:
 
     with st.container(border=True):
         st.plotly_chart(
-            # Pass the dynamic colors here too!
             create_spx_chart(month_option, df_month['Close'], df_month.index, spx_theme_color, spx_halo_color), 
             use_container_width=True,
-            config={'displayModeBar': False}
+            # --- NEW: Added scrollZoom to the config! ---
+            config={'displayModeBar': False, 'scrollZoom': True} 
         )
