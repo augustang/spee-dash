@@ -348,7 +348,7 @@ with col_right:
             
         # Layout rules (with the trackpad pan/zoom fixes!)
         fig.update_layout(
-            dragmode="pan",
+            dragmode="zoom",
             uirevision="constant", 
             height=350, 
             margin=dict(l=60, r=20, t=10, b=30), 
@@ -391,7 +391,7 @@ with col_right:
         st.plotly_chart(
             create_spx_chart(day_option, df_day['Close'], df_day.index, spx_theme_color, spx_halo_color), 
             use_container_width=True,
-            config={'displayModeBar': False, 'scrollZoom': True} 
+            config={'displayModeBar': False,} 
         )
 
     # 5. Month Chart Section
@@ -404,7 +404,7 @@ with col_right:
         st.plotly_chart(
             create_spx_chart(month_option, df_month['Close'], df_month.index, spx_theme_color, spx_halo_color), 
             use_container_width=True,
-            config={'displayModeBar': False, 'scrollZoom': True} 
+            config={'displayModeBar': False,} 
         )
 
 # --- NATIVE AUTO-REFRESH ---
