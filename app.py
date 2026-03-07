@@ -16,11 +16,14 @@ if 'selected_long' not in st.session_state:
 if 'selected_spread_px' not in st.session_state:
     st.session_state.selected_spread_px = 0.00
 
-# --- NEW: Initialize the input fields so they don't error out on first load ---
 if 'saved_entry' not in st.session_state:
     st.session_state.saved_entry = 0.00
 if 'saved_close' not in st.session_state:
     st.session_state.saved_close = 0.00
+
+# --- NEW: The Gatekeeper Tracker! ---
+if 'last_selected_short' not in st.session_state:
+    st.session_state.last_selected_short = None
 
 # 1. Page Setup & Load CSS
 st.set_page_config(page_title="SPX Dashboard", layout="wide")
@@ -254,18 +257,26 @@ with col_left:
         )
 
         # --- NEW: Save the selection to permanent memory! ---
+        # --- NEW: Save the selection to permanent memory! ---
         if len(selection_event.selection.rows) > 0:
             selected_idx = selection_event.selection.rows[0]
-            new_px = float(df_spreads.iloc[selected_idx]['Spread'])
+            current_short = df_spreads.iloc[selected_idx]['Strike']
             
-            st.session_state.selected_spread_px = new_px
-            st.session_state.selected_short = df_spreads.iloc[selected_idx]['Strike']
-            st.session_state.selected_long = df_spreads.iloc[selected_idx]['Leg']
-            
-            # --- THE FIX: Forcefully update the locked input fields! ---
-            st.session_state.saved_entry = new_px
-            st.session_state.saved_close = float(math.ceil(new_px * 20) / 20.0) if new_px > 0 else 0.00
-            
+            # THE FIX: Only overwrite the input boxes if you clicked a DIFFERENT spread!
+            if current_short != st.session_state.last_selected_short:
+                new_px = float(df_spreads.iloc[selected_idx]['Spread'])
+                
+                st.session_state.selected_spread_px = new_px
+                st.session_state.selected_short = current_short
+                st.session_state.selected_long = df_spreads.iloc[selected_idx]['Leg']
+                
+                # Overwrite the inputs with the new defaults
+                st.session_state.saved_entry = new_px
+                st.session_state.saved_close = float(math.ceil(new_px * 20) / 20.0) if new_px > 0 else 0.00
+                
+                # Update the tracker so it doesn't loop next time!
+                st.session_state.last_selected_short = current_short
+                
         # Pull the values BACK OUT of memory to use in the rest of the app
         selected_short = st.session_state.selected_short
         selected_long = st.session_state.selected_long
