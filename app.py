@@ -15,13 +15,20 @@ if 'selected_long' not in st.session_state:
     st.session_state.selected_long = None
 if 'selected_spread_px' not in st.session_state:
     st.session_state.selected_spread_px = 0.00
-
 if 'saved_entry' not in st.session_state:
     st.session_state.saved_entry = 0.00
 if 'saved_close' not in st.session_state:
     st.session_state.saved_close = 0.00
+if 'saved_bp' not in st.session_state:
+    st.session_state.saved_bp = 150000
+if 'saved_spread' not in st.session_state:
+    st.session_state.saved_spread = 10
+if 'saved_contracts' not in st.session_state:
+    st.session_state.saved_contracts = 150
+if 'saved_target' not in st.session_state:
+    st.session_state.saved_target = 1500
 
-# --- NEW: The Gatekeeper Tracker! ---
+# --- The Gatekeeper Tracker! ---
 if 'last_selected_short' not in st.session_state:
     st.session_state.last_selected_short = None
 
@@ -165,17 +172,21 @@ with col_left:
 
         st.write("")
         
+        # --- THE CALLBACK: Forces the math to run only when inputs are changed ---
+        def update_contracts():
+            bp = st.session_state.saved_bp
+            sw = st.session_state.saved_spread
+            st.session_state.saved_contracts = int(bp / (sw * 100))
+
         in1, in2 = st.columns(2)
-        # Adding a 'key' makes the field immortal during auto-refreshes!
-        buying_power = in1.number_input("Buying power ($)", value=150000, step=10000, format="%d", key="saved_bp")
-        spread_width = in2.selectbox("Spread width", [10, 25, 50, 100], index=0, key="saved_spread")
-        
-        # --- THE MATH FOR CONTRACTS ---
-        calc_contracts = int(buying_power / (spread_width * 100))
+        # Added on_change callbacks, and removed 'value' so they rely on memory!
+        buying_power = in1.number_input("Buying power ($)", step=10000, format="%d", key="saved_bp", on_change=update_contracts)
+        spread_width = in2.selectbox("Spread width", [10, 25, 50, 100], key="saved_spread", on_change=update_contracts)
         
         in3, in4 = st.columns(2)
-        contracts = in3.number_input("Contracts", value=calc_contracts, step=1, key="saved_contracts")
-        target_profit = in4.number_input("Target profit ($)", value=1500, step=100, key="saved_target")
+        # Removed 'value' so it stops fighting the memory!
+        contracts = in3.number_input("Contracts", step=1, key="saved_contracts")
+        target_profit = in4.number_input("Target profit ($)", step=100, key="saved_target")
 
     st.write("")
     st.markdown('<div class="section-label">Spreads</div>', unsafe_allow_html=True)
@@ -257,7 +268,6 @@ with col_left:
         )
 
         # --- NEW: Save the selection to permanent memory! ---
-        # --- NEW: Save the selection to permanent memory! ---
         if len(selection_event.selection.rows) > 0:
             selected_idx = selection_event.selection.rows[0]
             current_short = df_spreads.iloc[selected_idx]['Strike']
@@ -281,19 +291,6 @@ with col_left:
         selected_short = st.session_state.selected_short
         selected_long = st.session_state.selected_long
         selected_spread_px = st.session_state.selected_spread_px
-        
-        # --- Grab the price of the selected spread ---
-        selected_spread_px = 0.00
-        if len(selection_event.selection.rows) > 0:
-            selected_idx = selection_event.selection.rows[0]
-            selected_spread_px = df_spreads.iloc[selected_idx]['Spread']
-        
-        selected_short = None
-        selected_long = None
-        if len(selection_event.selection.rows) > 0:
-            selected_idx = selection_event.selection.rows[0]
-            selected_short = df_spreads.iloc[selected_idx]['Strike']
-            selected_long = df_spreads.iloc[selected_idx]['Leg']
 
     # --- CURRENT TRADE SECTION ---
     st.write("") 
