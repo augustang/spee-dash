@@ -247,12 +247,18 @@ with col_left:
             selection_mode="single-row"
         )
 
-        # --- Save the selection to permanent memory! ---
+        # --- NEW: Save the selection to permanent memory! ---
         if len(selection_event.selection.rows) > 0:
             selected_idx = selection_event.selection.rows[0]
-            st.session_state.selected_spread_px = df_spreads.iloc[selected_idx]['Spread']
+            new_px = float(df_spreads.iloc[selected_idx]['Spread'])
+            
+            st.session_state.selected_spread_px = new_px
             st.session_state.selected_short = df_spreads.iloc[selected_idx]['Strike']
             st.session_state.selected_long = df_spreads.iloc[selected_idx]['Leg']
+            
+            # --- THE FIX: Forcefully update the locked input fields! ---
+            st.session_state.saved_entry = new_px
+            st.session_state.saved_close = float(math.ceil(new_px * 20) / 20.0) if new_px > 0 else 0.00
             
         # Pull the values BACK OUT of memory to use in the rest of the app
         selected_short = st.session_state.selected_short
