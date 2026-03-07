@@ -16,6 +16,12 @@ if 'selected_long' not in st.session_state:
 if 'selected_spread_px' not in st.session_state:
     st.session_state.selected_spread_px = 0.00
 
+# --- NEW: Initialize the input fields so they don't error out on first load ---
+if 'saved_entry' not in st.session_state:
+    st.session_state.saved_entry = 0.00
+if 'saved_close' not in st.session_state:
+    st.session_state.saved_close = 0.00
+
 # 1. Page Setup & Load CSS
 st.set_page_config(page_title="SPX Dashboard", layout="wide")
 
@@ -282,21 +288,17 @@ with col_left:
     st.write("") 
     st.markdown('<div class="section-label">Current trade</div>', unsafe_allow_html=True)
     
-    # The Math Trick (with a safety net so it doesn't divide by zero before you click a spread!)
-    if selected_spread_px > 0:
-        default_realistic_close = math.ceil(selected_spread_px * 20) / 20.0
-    else:
-        default_realistic_close = 0.00
-    
     with st.container(border=True):
         col1, col2, col3, col4 = st.columns(4)
         
-        # --- NEW: Added key="saved_entry" to lock it in memory ---
-        entry_px = col1.number_input("Entry PX", value=float(selected_spread_px), step=0.05, key="saved_entry")
+        # THE FIX: We removed 'value=...' so Streamlit strictly relies on the 'key' memory!
+        entry_px = col1.number_input("Entry PX", step=0.05, key="saved_entry")
+        
+        # Current PX is disabled and not tied to memory, so it keeps its value parameter
         col2.number_input("Current PX", value=float(selected_spread_px), disabled=True)
         
-        # --- NEW: Added key="saved_close" to lock it in memory ---
-        realistic_close = col3.number_input("Realistic Close", value=float(default_realistic_close), step=0.05, key="saved_close")
+        # THE FIX: Removed 'value=...' here too!
+        realistic_close = col3.number_input("Realistic Close", step=0.05, key="saved_close")
         
         realistic_pl = (entry_px - realistic_close) * contracts * 100
         
