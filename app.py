@@ -192,78 +192,74 @@ with col_left:
     st.markdown('<div class="section-label">Spreads</div>', unsafe_allow_html=True)
     with st.container(border=True):
         spreads_list = []
+        seen_strikes = set()
         
-        # 1. Loop through ALL real, live OTM puts to build our master list
-        for index, short_put in live_puts_df.iterrows():
-            short_strike = short_put['strike']
-            long_strike = short_strike - spread_width
-            
-            # Search the chain to see if the long leg exists
-            long_put_match = live_puts_df[live_puts_df['strike'] == long_strike]
-            
-            if not long_put_match.empty:
-                long_put = long_put_match.iloc[0]
+        # 1. Generate our exact target percentages: 0.5% to 8.0% in 0.1% ish steps
+        target_pcts = [x / 10.0 for x in range(5, 81)] 
+        
+        # 2. Loop through our targets and find the closest real options
+        if not live_puts_df.empty:
+            for pct in target_pcts:
+                target_price = spx_last * (1 - (pct / 100))
                 
-                # Extract the live prices
-                short_px = short_put['lastPrice']
-                long_px = long_put['lastPrice']
-                spread_price = short_px - long_px
+                # Snap to the closest real strike to our theoretical target price
+                closest_idx = (live_puts_df['strike'] - target_price).abs().idxmin()
+                short_put = live_puts_df.loc[closest_idx]
+                short_strike = short_put['strike']
                 
-                # Free data sometimes has stale pricing resulting in negative spreads. Skip those!
-                if spread_price <= 0:
+                # Skip if we already mapped this strike (prevents duplicates from rounding)
+                if short_strike in seen_strikes:
                     continue
+                seen_strikes.add(short_strike)
+                
+                long_strike = short_strike - spread_width
+                long_put_match = live_puts_df[live_puts_df['strike'] == long_strike]
+                
+                if not long_put_match.empty:
+                    long_put = long_put_match.iloc[0]
+                    short_px = short_put['lastPrice']
+                    long_px = long_put['lastPrice']
+                    spread_price = short_px - long_px
                     
-                # Calculate the math
-                pts_out = abs(short_strike - spx_last)
-                pct_out = (pts_out / spx_last) * 100
-                total_premium = spread_price * contracts * 100
-                
-                spreads_list.append({
-                    "Pts": int(pts_out),
-                    "(%)": f"{pct_out:.1f}%",
-                    "Strike": int(short_strike),
-                    "Leg": int(long_strike),
-                    "Short PX": short_px,
-                    "Long PX": long_px,
-                    "Spread": spread_price,
-                    "Premiums": total_premium
-                })
-                
-        # 2. Find the "Goldilocks" index (lowest risk that still meets the target)
-        optimal_index = 0
-        for i, spread in enumerate(spreads_list):
-            if spread['Premiums'] >= target_profit:
-                optimal_index = i
-            else:
-                break # The moment we dip below the target profit, we stop searching!
-                
-        # 3. Slice the list to center the table around our target
-        # Show 5 rows above (riskier) and 5 rows below (safer/fails target)
-        start_idx = max(0, optimal_index - 5)
-        end_idx = min(len(spreads_list), optimal_index + 6)
+                    if spread_price > 0:
+                        pts_out = abs(short_strike - spx_last)
+                        actual_pct_out = (pts_out / spx_last) * 100
+                        total_premium = spread_price * contracts * 100
+                        
+                        spreads_list.append({
+                            "Pts": int(pts_out),
+                            "(%)": f"{actual_pct_out:.1f}%",
+                            "Strike": int(short_strike),
+                            "Leg": int(long_strike),
+                            "Short PX": short_px,
+                            "Long PX": long_px,
+                            "Spread": spread_price,
+                            "Premiums": total_premium
+                        })
+                        
+        df_spreads = pd.DataFrame(spreads_list)
         
-        # Create the dataframe from just that optimized slice!
-        df_spreads = pd.DataFrame(spreads_list[start_idx:end_idx])
-        
-        # 2. Dynamic Highlight Logic: Highlight ANY row that hits the Target Profit
+        # Dynamic Highlight Logic
         def highlight_target(row):
             if row['Premiums'] >= target_profit: 
                 return ['background-color: #E4FF7A; color: black; font-weight: bold'] * len(row)
             return [''] * len(row)
             
-        # 3. Format the table neatly
         styled_df = df_spreads.style.format({
             "Short PX": "{:.2f}",
             "Long PX": "{:.2f}",
             "Spread": "{:.2f}",
-            "Premiums": "${:,.0f}" # Formats the raw math number into a nice currency string
+            "Premiums": "${:,.0f}" 
         }).apply(highlight_target, axis=1)
         
+        # --- THE SCROLLABLE FIX ---
+        # Added height=350 to lock the container size and allow internal scrolling
         selection_event = st.dataframe(
             styled_df, 
             hide_index=True, 
             use_container_width=True,
-            on_select="rerun",           # This tells the app to refresh when a box is checked!
+            height=350, 
+            on_select="rerun",
             selection_mode="single-row"
         )
 
