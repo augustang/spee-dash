@@ -2,11 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from streamlit_autorefresh import st_autorefresh
 import datetime
 import pytz
 import yfinance as yf
 import math
 import time
+import schwab_client
 
 # --- INITIALIZE SESSION STATE MEMORY ---
 if 'selected_short' not in st.session_state:
@@ -74,42 +76,52 @@ header_html = f"""
 """
 st.markdown(header_html, unsafe_allow_html=True)
 
-# 3. YFinance Data Fetching Logic
+# 3. Live Schwab Data Fetching Logic
 @st.cache_data(ttl=60) # Refreshes metrics every minute
 def get_spx_metrics():
     try:
-        spx = yf.Ticker("^GSPC")
-        todays_data = spx.history(period="1d")
-        spx_last = todays_data['Close'].iloc[-1]
-        spx_open = todays_data['Open'].iloc[0]
-        pts_change = spx_last - spx_open
-        pct_change = (pts_change / spx_open) * 100
+        quote_data = schwab_client.fetch_live_quote("$SPX")
+        if quote_data:
+            spx_last = quote_data['lastPrice']
+            spx_open = quote_data['openPrice']
+            spx_prior = quote_data['closePrice'] # Schwab gives us yesterday's close for free!
+            pts_change = quote_data['netChange']
+            pct_change = (pts_change / spx_open) * 100
+            
+            # Format string for the green pill
+            arrow = "↑" if pts_change >= 0 else "↓"
+            delta_string = f"{arrow} {abs(pts_change):.2f} pts ({abs(pct_change):.2f}%)"
+            return spx_last, spx_open, spx_prior, delta_string
+            
+    except Exception as e:
+        pass 
         
-        # Format string for the green pill
-        arrow = "↑" if pts_change >= 0 else "↓"
-        delta_string = f"{arrow} {abs(pts_change):.2f} pts ({pct_change:.2f}%)"
-        return spx_last, spx_open, delta_string
-    except Exception:
-        return 6850.00, 6860.00, "0 pts (0%)" # Fallback if API fails
+    return 6850.00, 6860.00, 6800.00, "0 pts (0%)" # Fallback if API fails
 
-@st.cache_data(ttl=300) # Refreshes charts every 5 minutes
-def get_spx_history(period, interval):
-    spx = yf.Ticker("^GSPC")
-    return spx.history(period=period, interval=interval)
+# 1. Establish the baseline for the whole app (fixes the NameError!)
+spx_last, spx_open, spx_prior_close, delta_string = get_spx_metrics()
 
-spx_last, spx_open, delta_string = get_spx_metrics()
+# 2. Wrap JUST the UI inside the auto-refreshing fragment
+@st.fragment(run_every=10)
+def render_top_metrics():
+    # The fragment fetches its own fresh data quietly in the background
+    f_last, f_open, f_prior, f_delta = get_spx_metrics()
 
-# 1. Fetch the data (last 5 days to ensure we have yesterday's close)
-spx_data = yf.Ticker("^GSPC").history(period="5d")
+# 3. Fetch the data (last 5 days to ensure we have yesterday's close)
 vix_data = yf.Ticker("^VIX").history(period="1d")
 vix9d_data = yf.Ticker("^VIX9D").history(period="1d")
 
-# 2. Extract the exact numbers you need
-spx_prior_close = spx_data['Close'].iloc[-2]  # The second to last item is yesterday's close
+# 4. Extract the exact numbers you need
 vix_last = vix_data['Close'].iloc[-1]
 vix9d_last = vix9d_data['Close'].iloc[-1]
 
 # --- FETCH LIVE OPTIONS DATA ---
+@st.cache_data(ttl=60)
+def get_spx_history(period="1d", interval="5m"):
+    spx = yf.Ticker("^GSPC")
+    hist = spx.history(period=period, interval=interval)
+    return hist
+
 @st.cache_data(ttl=60) # Caches the data for 60 seconds to keep the app fast
 def get_spx_puts(current_price):
     spx = yf.Ticker("^SPX")
