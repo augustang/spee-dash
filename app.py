@@ -121,49 +121,72 @@ vix9d_quote = schwab_client.fetch_live_quote("$VIX9D") # Sometimes $VX9D dependi
 vix_last = vix_quote['lastPrice'] if vix_quote else 0.00
 vix9d_last = vix9d_quote['lastPrice'] if vix9d_quote else 0.00
 
-# --- FETCH SPX INTRADAY HISTORY (For the Chart) ---
-@st.cache_data(ttl=60)
-# --- FETCH SPX HISTORY (With dynamic timeframe translation!) ---
+# --- FETCH SPX HISTORY (Bulletproof Timezone & Trading Day Logic) ---
 @st.cache_data(ttl=60)
 def get_spx_history(period="1d", interval="5m"):
-    # 1. Translate our simple buttons into Schwab's strict API requirements
-    if period == "1d":
-        p_type, p_val, f_type, f_val = "day", 1, "minute", 5
-    elif period == "3d":
-        p_type, p_val, f_type, f_val = "day", 3, "minute", 5
-    elif period == "5d":
-        p_type, p_val, f_type, f_val = "day", 5, "minute", 5
-    elif period == "1mo":
-        p_type, p_val, f_type, f_val = "month", 1, "daily", 1
-    elif period == "3mo":
-        p_type, p_val, f_type, f_val = "month", 3, "daily", 1
-    elif period == "6mo":
-        p_type, p_val, f_type, f_val = "month", 6, "daily", 1
-    else:
-        p_type, p_val, f_type, f_val = "day", 1, "minute", 5 # Fallback
-
-    # 2. Call the upgraded Schwab client
-    history_data = schwab_client.fetch_price_history(
-        symbol="$SPX", 
-        period_type=p_type, 
-        period=p_val, 
-        freq_type=f_type, 
-        freq=f_val
-    )
+    import time
+    import datetime
+    import pytz
+    import pandas as pd
     
+    now_ms = int(time.time() * 1000)
+    
+    # 1. Fetch data explicitly using Milliseconds to bypass Schwab's buggy period logic
+    if period in ["1d", "3d", "5d"]:
+        p_type, f_type, f_val = "day", "minute", 5
+        # Grab a massive 10-day chunk to guarantee we easily clear weekends and holidays
+        start_ms = now_ms - (86400 * 1000 * 10) 
+        
+        history_data = schwab_client.fetch_price_history(
+            symbol="$SPX", period_type=p_type, freq_type=f_type, freq=f_val,
+            start_date=start_ms, end_date=now_ms
+        )
+        
+    # Historical charts (Daily candles) can safely use standard Schwab logic
+    elif period == "1mo":
+        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="month", period=1, freq_type="daily", freq=1)
+    elif period == "3mo":
+        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="month", period=3, freq_type="daily", freq=1)
+    elif period == "6mo":
+        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="month", period=6, freq_type="daily", freq=1)
+    else:
+        return pd.DataFrame()
+
     if history_data and 'candles' in history_data:
         df = pd.DataFrame(history_data['candles'])
-        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
         
-        # If it's a daily chart, strip the exact time off so the x-axis stays clean
-        if f_type == "daily":
+        if df.empty:
+            return df
+            
+        # Convert UTC to US/Eastern explicitly
+        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+        df['datetime'] = df['datetime'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern').dt.tz_localize(None)
+        
+        # --- THE BULLETPROOF TRADING DAY FILTER ---
+        if period in ["1d", "3d", "5d"]:
+            # Find all the unique, actual trading days that exist in this data chunk
+            unique_dates = sorted(df['datetime'].dt.date.unique())
+            
+            # Slice off exactly the number of days we want from the end of the list
+            if period == "1d":
+                target_dates = unique_dates[-1:] # The absolute latest trading day
+            elif period == "3d":
+                target_dates = unique_dates[-3:] # The last 3 trading days
+            elif period == "5d":
+                target_dates = unique_dates[-5:] # The last 5 trading days
+                
+            # Filter the dataframe to only include those exact dates
+            df = df[df['datetime'].dt.date.isin(target_dates)]
+            
+        # Clean up the x-axis for historical charts
+        if period in ["1mo", "3mo", "6mo"]:
             df['datetime'] = df['datetime'].dt.normalize()
             
         df.set_index('datetime', inplace=True)
         df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
         return df
         
-    return pd.DataFrame() # Empty fallback
+    return pd.DataFrame()
 
 # --- FETCH LIVE OPTIONS DATA ---
 @st.cache_data(ttl=60)
