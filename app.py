@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 import datetime
 import pytz
-import yfinance as yf
 import math
 import time
 import schwab_client
@@ -107,20 +106,26 @@ def render_top_metrics():
     # The fragment fetches its own fresh data quietly in the background
     f_last, f_open, f_prior, f_delta = get_spx_metrics()
 
-# 3. Fetch the data (last 5 days to ensure we have yesterday's close)
-vix_data = yf.Ticker("^VIX").history(period="1d")
-vix9d_data = yf.Ticker("^VIX9D").history(period="1d")
+# 1. Fetch VIX Data from Schwab
+vix_quote = schwab_client.fetch_live_quote("$VIX")
+vix9d_quote = schwab_client.fetch_live_quote("$VIX9D") # Sometimes $VX9D depending on the broker mapping, but let's try this!
 
-# 4. Extract the exact numbers you need
-vix_last = vix_data['Close'].iloc[-1]
-vix9d_last = vix9d_data['Close'].iloc[-1]
+vix_last = vix_quote['lastPrice'] if vix_quote else 0.00
+vix9d_last = vix9d_quote['lastPrice'] if vix9d_quote else 0.00
 
-# --- FETCH LIVE OPTIONS DATA ---
+# --- FETCH SPX INTRADAY HISTORY (For the Chart) ---
 @st.cache_data(ttl=60)
-def get_spx_history(period="1d", interval="5m"):
-    spx = yf.Ticker("^GSPC")
-    hist = spx.history(period=period, interval=interval)
-    return hist
+def get_spx_history(period="1d", interval="5m"): # We keep the parameters so it doesn't break your UI buttons
+    history_data = schwab_client.fetch_price_history("$SPX")
+    if history_data and 'candles' in history_data:
+        df = pd.DataFrame(history_data['candles'])
+        # Convert Schwab's milliseconds timestamp into a datetime
+        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+        df.set_index('datetime', inplace=True)
+        # Rename columns to match what Plotly expects from the old yf code
+        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
+        return df
+    return pd.DataFrame() # Empty fallback
 
 @st.cache_data(ttl=60) # Caches the data for 60 seconds to keep the app fast
 def get_spx_puts(current_price):
@@ -139,7 +144,39 @@ def get_spx_puts(current_price):
     otm_puts = puts[puts['strike'] < current_price].sort_values(by='strike', ascending=False)
     return otm_puts
 
-# Actually call the function to get the data
+# --- FETCH LIVE OPTIONS DATA ---
+@st.cache_data(ttl=60)
+def get_spx_puts(current_price):
+    chain_data = schwab_client.fetch_options_chain("$SPX")
+    
+    if not chain_data or 'putExpDateMap' not in chain_data:
+        return pd.DataFrame()
+        
+    put_map = chain_data['putExpDateMap']
+    if not put_map:
+        return pd.DataFrame()
+        
+    # Grab the closest expiration date key (e.g. "2026-03-09:0")
+    closest_exp_date = sorted(put_map.keys())[0]
+    closest_puts = put_map[closest_exp_date]
+    
+    # Flatten Schwab's nested dictionary into a list of options
+    put_list = []
+    for strike, strike_data in closest_puts.items():
+        option = strike_data[0] # The first item in the list is the option data
+        put_list.append({
+            'strike': float(strike),
+            'lastPrice': option['last'] if option['last'] > 0 else option['mark'], # Fallback to mark if no last trade
+            'bid': option['bid'],
+            'ask': option['ask']
+        })
+        
+    # Create the DataFrame and sort closest to the money first
+    df = pd.DataFrame(put_list)
+    df = df.sort_values(by='strike', ascending=False).reset_index(drop=True)
+    return df
+
+# Actually call the function to get the data using our global spx_last variable
 live_puts_df = get_spx_puts(spx_last)
 
 # 4. Main Layout Columns
@@ -415,6 +452,7 @@ with col_right:
         st.plotly_chart(
             create_spx_chart(day_option, df_day['Close'], df_day.index, spx_theme_color, spx_halo_color), 
             use_container_width=True,
+            key="day_spx_chart",
             config={'displayModeBar': False,} 
         )
 
@@ -428,6 +466,7 @@ with col_right:
         st.plotly_chart(
             create_spx_chart(month_option, df_month['Close'], df_month.index, spx_theme_color, spx_halo_color), 
             use_container_width=True,
+            key="month_spx_chart",
             config={'displayModeBar': False,} 
         )
 

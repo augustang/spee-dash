@@ -71,3 +71,57 @@ def fetch_live_quote(symbol="$SPX"):
         }
     else:
         return None
+    
+def fetch_price_history(symbol="$SPX"):
+    """Fetches intraday 5-minute candles for the chart."""
+    with open(TOKEN_PATH, 'r') as f:
+        tokens = json.load(f)
+        
+    access_token = tokens['access_token']
+    url = "https://api.schwabapi.com/marketdata/v1/pricehistory"
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    
+    params = {
+        "symbol": symbol,
+        "periodType": "day",
+        "period": 1,
+        "frequencyType": "minute",
+        "frequency": 5
+    }
+    
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 401:
+        new_token = refresh_access_token()
+        headers["Authorization"] = f"Bearer {new_token}"
+        response = requests.get(url, headers=headers, params=params)
+        
+    if response.status_code == 200:
+        return response.json()
+    return None
+
+def fetch_options_chain(symbol="$SPX"):
+    """Fetches the near-term Out-Of-The-Money puts."""
+    with open(TOKEN_PATH, 'r') as f:
+        tokens = json.load(f)
+        
+    access_token = tokens['access_token']
+    url = "https://api.schwabapi.com/marketdata/v1/chains"
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    
+    params = {
+        "symbol": symbol,
+        "contractType": "PUT",
+        "includeQuotes": "TRUE",
+        "range": "OTM", # Only grab Out-of-the-Money
+        "daysToExpiration": 5 # Limit to near-term expirations (0DTE/closest)
+    }
+    
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 401:
+        new_token = refresh_access_token()
+        headers["Authorization"] = f"Bearer {new_token}"
+        response = requests.get(url, headers=headers, params=params)
+        
+    if response.status_code == 200:
+        return response.json()
+    return None
