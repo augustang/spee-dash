@@ -8,6 +8,14 @@ import pytz
 import math
 import time
 import schwab_client
+import os
+import json
+
+# --- CLOUD DEPLOYMENT FIX: Rebuild the Schwab tokens file from Secrets ---
+if not os.path.exists('.streamlit/schwab_tokens.json'):
+    os.makedirs('.streamlit', exist_ok=True)
+    with open('.streamlit/schwab_tokens.json', 'w') as f:
+        f.write(st.secrets["SCHWAB_TOKENS_JSON"])
 
 # --- INITIALIZE SESSION STATE MEMORY ---
 if 'selected_short' not in st.session_state:
