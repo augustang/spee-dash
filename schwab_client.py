@@ -72,8 +72,8 @@ def fetch_live_quote(symbol="$SPX"):
     else:
         return None
     
-def fetch_price_history(symbol="$SPX"):
-    """Fetches intraday 5-minute candles for the chart."""
+def fetch_price_history(symbol="$SPX", period_type="day", period=1, freq_type="minute", freq=5):
+    """Fetches intraday or historical candles from Schwab."""
     with open(TOKEN_PATH, 'r') as f:
         tokens = json.load(f)
         
@@ -81,12 +81,13 @@ def fetch_price_history(symbol="$SPX"):
     url = "https://api.schwabapi.com/marketdata/v1/pricehistory"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     
+    # Now it dynamically uses the parameters we pass to it!
     params = {
         "symbol": symbol,
-        "periodType": "day",
-        "period": 1,
-        "frequencyType": "minute",
-        "frequency": 5
+        "periodType": period_type,
+        "period": period,
+        "frequencyType": freq_type,
+        "frequency": freq
     }
     
     response = requests.get(url, headers=headers, params=params)

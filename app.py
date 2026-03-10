@@ -115,38 +115,51 @@ vix9d_last = vix9d_quote['lastPrice'] if vix9d_quote else 0.00
 
 # --- FETCH SPX INTRADAY HISTORY (For the Chart) ---
 @st.cache_data(ttl=60)
-def get_spx_history(period="1d", interval="5m"): # We keep the parameters so it doesn't break your UI buttons
-    history_data = schwab_client.fetch_price_history("$SPX")
+# --- FETCH SPX HISTORY (With dynamic timeframe translation!) ---
+@st.cache_data(ttl=60)
+def get_spx_history(period="1d", interval="5m"):
+    # 1. Translate our simple buttons into Schwab's strict API requirements
+    if period == "1d":
+        p_type, p_val, f_type, f_val = "day", 1, "minute", 5
+    elif period == "3d":
+        p_type, p_val, f_type, f_val = "day", 3, "minute", 5
+    elif period == "5d":
+        p_type, p_val, f_type, f_val = "day", 5, "minute", 5
+    elif period == "1mo":
+        p_type, p_val, f_type, f_val = "month", 1, "daily", 1
+    elif period == "3mo":
+        p_type, p_val, f_type, f_val = "month", 3, "daily", 1
+    elif period == "6mo":
+        p_type, p_val, f_type, f_val = "month", 6, "daily", 1
+    else:
+        p_type, p_val, f_type, f_val = "day", 1, "minute", 5 # Fallback
+
+    # 2. Call the upgraded Schwab client
+    history_data = schwab_client.fetch_price_history(
+        symbol="$SPX", 
+        period_type=p_type, 
+        period=p_val, 
+        freq_type=f_type, 
+        freq=f_val
+    )
+    
     if history_data and 'candles' in history_data:
         df = pd.DataFrame(history_data['candles'])
-        # Convert Schwab's milliseconds timestamp into a datetime
         df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+        
+        # If it's a daily chart, strip the exact time off so the x-axis stays clean
+        if f_type == "daily":
+            df['datetime'] = df['datetime'].dt.normalize()
+            
         df.set_index('datetime', inplace=True)
-        # Rename columns to match what Plotly expects from the old yf code
         df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
         return df
-    return pd.DataFrame() # Empty fallback
-
-@st.cache_data(ttl=60) # Caches the data for 60 seconds to keep the app fast
-def get_spx_puts(current_price):
-    spx = yf.Ticker("^SPX")
-    expirations = spx.options
-    
-    # Safety check in case the market is closed/data is missing
-    if not expirations:
-        return pd.DataFrame()
         
-    # Grab the closest expiration date (0DTE or next available)
-    chain = spx.option_chain(expirations[0])
-    puts = chain.puts
-    
-    # Filter for Out-of-the-Money (OTM) puts only, and sort closest to the money first
-    otm_puts = puts[puts['strike'] < current_price].sort_values(by='strike', ascending=False)
-    return otm_puts
+    return pd.DataFrame() # Empty fallback
 
 # --- FETCH LIVE OPTIONS DATA ---
 @st.cache_data(ttl=60)
-def get_spx_puts(current_price):
+def get_spx_puts():
     chain_data = schwab_client.fetch_options_chain("$SPX")
     
     if not chain_data or 'putExpDateMap' not in chain_data:
@@ -177,7 +190,7 @@ def get_spx_puts(current_price):
     return df
 
 # Actually call the function to get the data using our global spx_last variable
-live_puts_df = get_spx_puts(spx_last)
+live_puts_df = get_spx_puts()
 
 # 4. Main Layout Columns
 col_left, col_right = st.columns([1.3, 2.7], gap="medium")
@@ -360,9 +373,11 @@ with col_left:
         col4.text_input("Realistic P/L", value=pl_string, disabled=True)
 
 with col_right:
-    # 1. Update function signature to accept color parameters
+    st.markdown('<div class="section-label">Charts</div>', unsafe_allow_html=True)
+
+    # 2. THE CHART DRAWING ENGINE
     def create_spx_chart(title, prices, dates, line_color, halo_color):
-        fig = go.Figure()
+        fig = go.Figure() # This creates the canvas!
         
         # Main line trace
         fig.add_trace(go.Scatter(
@@ -387,11 +402,14 @@ with col_right:
             ))
             
         # Calculate 5% breathing room
-        min_date = dates.min()
-        max_date = dates.max()
-        date_range = max_date - min_date
-        padded_max_date = max_date + (date_range * 0.05)
-        
+        if len(dates) > 0:
+            min_date = dates.min()
+            max_date = dates.max()
+            date_range = max_date - min_date
+            padded_max_date = max_date + (date_range * 0.05)
+        else:
+            min_date, padded_max_date = None, None
+            
         # Interactive strike lines
         if selected_short is not None and selected_long is not None:
             fig.add_hline(
@@ -407,7 +425,7 @@ with col_right:
                 annotation=dict(font_size=8, font_color="white", bgcolor="#FF6347", borderpad=3, bordercolor="#FF6347")
             )
             
-        # Layout rules (with the trackpad pan/zoom fixes!)
+        # Layout rules
         fig.update_layout(
             dragmode="zoom",
             uirevision="constant", 
@@ -423,7 +441,7 @@ with col_right:
                 font=dict(color="#1E1E1E")
             ),
             xaxis=dict(
-                showgrid=True, gridcolor="#F0F0F0", range=[min_date, padded_max_date],
+                showgrid=True, gridcolor="#F0F0F0", range=[min_date, padded_max_date] if min_date else None,
                 showspikes=True, spikemode="across", spikesnap="cursor", spikedash="1, 3",     
                 spikecolor="#B2B2B2", spikethickness=1
             ),
@@ -435,41 +453,69 @@ with col_right:
             )
         )
         return fig
-    
 
-    # 4. Day Chart Section
-    day_option = st.segmented_control("Day Chart Options", ["5 Day chart", "3 Day chart", "1 Day chart"], default="5 Day chart", label_visibility="collapsed")
-    if day_option is None: day_option = "5 Day chart"
-    day_params = {"5 Day chart": "5d", "3 Day chart": "3d", "1 Day chart": "1d"}
-    df_day = get_spx_history(period=day_params[day_option], interval="5m")
+    # 3. DAY CHART FRAGMENT
+    @st.fragment(run_every=60)
+    def render_day_chart():
+        # We define the variables safely inside the soundproof room!
+        day_params = {"1 Day": "1d", "3 Days": "3d", "5 Days": "5d"}
+        
+        with st.container(border=True):
+            # This puts the button inside the box and collapses the title text!
+            selected_option = st.radio(
+                "Intraday Timeframe", 
+                list(day_params.keys()), 
+                horizontal=True, 
+                key="day_radio",
+                label_visibility="collapsed" 
+            )
+            
+            df_day = get_spx_history(period=day_params[selected_option], interval="5m")
+            f_last, f_open, f_prior, f_delta = get_spx_metrics()
+            
+            is_spx_down = (f_last - f_open) < 0
+            spx_theme_color = "#FF3D54" if is_spx_down else "#11F185" 
+            spx_halo_color = 'rgba(255, 61, 84, 0.3)' if is_spx_down else 'rgba(17, 241, 133, 0.3)'
+            
+            st.plotly_chart(
+                create_spx_chart(selected_option, df_day['Close'], df_day.index, spx_theme_color, spx_halo_color), 
+                use_container_width=True,
+                key="day_spx_chart",
+                config={'displayModeBar': False} 
+            )
 
-    # Chart Color Logic based on "Change from open"
-    is_spx_down = (spx_last - spx_open) < 0
-    spx_theme_color = "#FF3D54" if is_spx_down else "#11F185" 
-    spx_halo_color = 'rgba(255, 61, 84, 0.3)' if is_spx_down else 'rgba(17, 241, 133, 0.3)'
+    # DRAW DAY CHART
+    render_day_chart()
 
-    with st.container(border=True):
-        st.plotly_chart(
-            create_spx_chart(day_option, df_day['Close'], df_day.index, spx_theme_color, spx_halo_color), 
-            use_container_width=True,
-            key="day_spx_chart",
-            config={'displayModeBar': False,} 
-        )
+    # 4. MONTH CHART FRAGMENT
+    @st.fragment(run_every=60)
+    def render_month_chart():
+        # We define the variables safely inside the soundproof room!
+        month_params = {"6 Months": "6mo","3 Months": "3mo","1 Month": "1mo"}
+        
+        with st.container(border=True):
+            # This puts the button inside the box and collapses the title text!
+            selected_option = st.radio(
+                "Historical Timeframe", 
+                list(month_params.keys()), 
+                horizontal=True, 
+                key="month_radio",
+                label_visibility="collapsed"
+            )
+            
+            df_month = get_spx_history(period=month_params[selected_option], interval="1d") 
+            f_last, f_open, f_prior, f_delta = get_spx_metrics()
+            
+            is_spx_down = (f_last - f_open) < 0
+            spx_theme_color = "#FF3D54" if is_spx_down else "#11F185" 
+            spx_halo_color = 'rgba(255, 61, 84, 0.3)' if is_spx_down else 'rgba(17, 241, 133, 0.3)'
+            
+            st.plotly_chart(
+                create_spx_chart(selected_option, df_month['Close'], df_month.index, spx_theme_color, spx_halo_color), 
+                use_container_width=True,
+                key="month_spx_chart",
+                config={'displayModeBar': False} 
+            )
 
-    # 5. Month Chart Section
-    month_option = st.segmented_control("Month Chart Options", ["6 Month SPX", "3 Month SPX", "1 Month SPX"], default="6 Month SPX", label_visibility="collapsed")
-    if month_option is None: month_option = "6 Month SPX"
-    month_params = {"6 Month SPX": "6mo", "3 Month SPX": "3mo", "1 Month SPX": "1mo"}
-    df_month = get_spx_history(period=month_params[month_option], interval="1d")
-
-    with st.container(border=True):
-        st.plotly_chart(
-            create_spx_chart(month_option, df_month['Close'], df_month.index, spx_theme_color, spx_halo_color), 
-            use_container_width=True,
-            key="month_spx_chart",
-            config={'displayModeBar': False,} 
-        )
-
-# --- NATIVE AUTO-REFRESH ---
-time.sleep(60)
-st.rerun()
+    # DRAW MONTH CHART
+    render_month_chart()
