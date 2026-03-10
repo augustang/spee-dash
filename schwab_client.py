@@ -72,24 +72,33 @@ def fetch_live_quote(symbol="$SPX"):
     else:
         return None
     
-def fetch_price_history(symbol="$SPX", period_type="day", period=1, freq_type="minute", freq=5):
-    """Fetches intraday or historical candles from Schwab."""
-    with open(TOKEN_PATH, 'r') as f:
+def fetch_price_history(symbol="$SPX", period_type="day", period=1, freq_type="minute", freq=5, start_date=None, end_date=None):
+    """Fetches intraday or historical candles from Schwab using explicit timestamps."""
+    import json
+    import requests
+    
+    # Note: Make sure this token path matches what you currently use in this file!
+    with open('.streamlit/schwab_tokens.json', 'r') as f:
         tokens = json.load(f)
         
     access_token = tokens['access_token']
     url = "https://api.schwabapi.com/marketdata/v1/pricehistory"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     
-    # Now it dynamically uses the parameters we pass to it!
     params = {
         "symbol": symbol,
         "periodType": period_type,
-        "period": period,
         "frequencyType": freq_type,
         "frequency": freq
     }
     
+    # THE UPGRADE: Override period if we have exact dates
+    if start_date and end_date:
+        params["startDate"] = int(start_date)
+        params["endDate"] = int(end_date)
+    else:
+        params["period"] = period
+        
     response = requests.get(url, headers=headers, params=params)
     if response.status_code == 401:
         new_token = refresh_access_token()
