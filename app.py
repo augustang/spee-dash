@@ -54,7 +54,7 @@ def load_css(file_name):
 load_css("style.css")
 
 # 2. Header & Live Time Logic
-eastern = pytz.timezone('US/Eastern')
+eastern = pytz.timezone('America/New_York')
 now = datetime.datetime.now(eastern)
 date_str = now.strftime("%A %B %-d, %Y")
 time_str = now.strftime("%H:%M")
@@ -121,7 +121,7 @@ vix9d_quote = schwab_client.fetch_live_quote("$VIX9D") # Sometimes $VX9D dependi
 vix_last = vix_quote['lastPrice'] if vix_quote else 0.00
 vix9d_last = vix9d_quote['lastPrice'] if vix9d_quote else 0.00
 
-# --- FETCH SPX HISTORY (Bulletproof Timezone & Trading Day Logic) ---
+# --- FETCH SPX HISTORY (Bulletproof Timezone & Exact Milliseconds) ---
 @st.cache_data(ttl=60)
 def get_spx_history(period="1d", interval="5m"):
     import time
@@ -131,24 +131,26 @@ def get_spx_history(period="1d", interval="5m"):
     
     now_ms = int(time.time() * 1000)
     
-    # 1. Fetch data explicitly using Milliseconds to bypass Schwab's buggy period logic
+    # 1. INTRADAY CHARTS (5-minute candles)
     if period in ["1d", "3d", "5d"]:
         p_type, f_type, f_val = "day", "minute", 5
-        # Grab a massive 10-day chunk to guarantee we easily clear weekends and holidays
-        start_ms = now_ms - (86400 * 1000 * 10) 
+        start_ms = now_ms - (86400 * 1000 * 10) # 10-day wide net to catch trading days safely
         
         history_data = schwab_client.fetch_price_history(
             symbol="$SPX", period_type=p_type, freq_type=f_type, freq=f_val,
             start_date=start_ms, end_date=now_ms
         )
         
-    # Historical charts (Daily candles) can safely use standard Schwab logic
+    # 2. HISTORICAL CHARTS (Daily candles using explicit timestamps!)
     elif period == "1mo":
-        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="month", period=1, freq_type="daily", freq=1)
+        start_ms = now_ms - (86400 * 1000 * 30) # Exactly 30 days ago
+        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="year", freq_type="daily", freq=1, start_date=start_ms, end_date=now_ms)
     elif period == "3mo":
-        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="month", period=3, freq_type="daily", freq=1)
+        start_ms = now_ms - (86400 * 1000 * 90) # Exactly 90 days ago
+        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="year", freq_type="daily", freq=1, start_date=start_ms, end_date=now_ms)
     elif period == "6mo":
-        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="month", period=6, freq_type="daily", freq=1)
+        start_ms = now_ms - (86400 * 1000 * 180) # Exactly 180 days ago
+        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="year", freq_type="daily", freq=1, start_date=start_ms, end_date=now_ms)
     else:
         return pd.DataFrame()
 
@@ -158,27 +160,23 @@ def get_spx_history(period="1d", interval="5m"):
         if df.empty:
             return df
             
-        # Convert UTC to US/Eastern explicitly
+        # Convert UTC to America/New_York explicitly
         df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-        df['datetime'] = df['datetime'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern').dt.tz_localize(None)
+        df['datetime'] = df['datetime'].dt.tz_localize('UTC').dt.tz_convert('America/New_York').dt.tz_localize(None)
         
         # --- THE BULLETPROOF TRADING DAY FILTER ---
         if period in ["1d", "3d", "5d"]:
-            # Find all the unique, actual trading days that exist in this data chunk
             unique_dates = sorted(df['datetime'].dt.date.unique())
-            
-            # Slice off exactly the number of days we want from the end of the list
             if period == "1d":
-                target_dates = unique_dates[-1:] # The absolute latest trading day
+                target_dates = unique_dates[-1:]
             elif period == "3d":
-                target_dates = unique_dates[-3:] # The last 3 trading days
+                target_dates = unique_dates[-3:]
             elif period == "5d":
-                target_dates = unique_dates[-5:] # The last 5 trading days
-                
-            # Filter the dataframe to only include those exact dates
+                target_dates = unique_dates[-5:]
             df = df[df['datetime'].dt.date.isin(target_dates)]
             
-        # Clean up the x-axis for historical charts
+        # --- HISTORICAL CLEANUP ---
+        # Strip out the exact midnight times so the x-axis looks clean and crisp
         if period in ["1mo", "3mo", "6mo"]:
             df['datetime'] = df['datetime'].dt.normalize()
             
