@@ -189,34 +189,35 @@ def get_spx_history(period="1d", interval="5m"):
 # --- FETCH LIVE OPTIONS DATA ---
 @st.cache_data(ttl=60)
 def get_spx_puts():
-    chain_data = schwab_client.fetch_options_chain("$SPX")
-    
-    if not chain_data or 'putExpDateMap' not in chain_data:
+    try:
+        chain_data = schwab_client.fetch_options_chain("$SPX")
+        
+        if not chain_data or 'putExpDateMap' not in chain_data:
+            return pd.DataFrame()
+            
+        put_map = chain_data['putExpDateMap']
+        if not put_map:
+            return pd.DataFrame()
+            
+        closest_exp_date = sorted(put_map.keys())[0]
+        closest_puts = put_map[closest_exp_date]
+        
+        put_list = []
+        for strike, strike_data in closest_puts.items():
+            option = strike_data[0]
+            put_list.append({
+                'strike': float(strike),
+                'lastPrice': option['last'] if option['last'] > 0 else option['mark'],
+                'bid': option['bid'],
+                'ask': option['ask']
+            })
+            
+        df = pd.DataFrame(put_list)
+        df = df.sort_values(by='strike', ascending=False).reset_index(drop=True)
+        return df
+    except Exception as e:
+        st.warning(f"Could not load options data: {e}")
         return pd.DataFrame()
-        
-    put_map = chain_data['putExpDateMap']
-    if not put_map:
-        return pd.DataFrame()
-        
-    # Grab the closest expiration date key (e.g. "2026-03-09:0")
-    closest_exp_date = sorted(put_map.keys())[0]
-    closest_puts = put_map[closest_exp_date]
-    
-    # Flatten Schwab's nested dictionary into a list of options
-    put_list = []
-    for strike, strike_data in closest_puts.items():
-        option = strike_data[0] # The first item in the list is the option data
-        put_list.append({
-            'strike': float(strike),
-            'lastPrice': option['last'] if option['last'] > 0 else option['mark'], # Fallback to mark if no last trade
-            'bid': option['bid'],
-            'ask': option['ask']
-        })
-        
-    # Create the DataFrame and sort closest to the money first
-    df = pd.DataFrame(put_list)
-    df = df.sort_values(by='strike', ascending=False).reset_index(drop=True)
-    return df
 
 # Actually call the function to get the data using our global spx_last variable
 live_puts_df = get_spx_puts()
@@ -330,32 +331,32 @@ with col_left:
                         
         df_spreads = pd.DataFrame(spreads_list)
         
-        # Dynamic Highlight Logic
-        def highlight_target(row):
-            if row['Premiums'] >= target_profit: 
-                return ['background-color: #E4FF7A; color: black; font-weight: bold'] * len(row)
-            return [''] * len(row)
+        if not df_spreads.empty:
+            def highlight_target(row):
+                if row['Premiums'] >= target_profit: 
+                    return ['background-color: #E4FF7A; color: black; font-weight: bold'] * len(row)
+                return [''] * len(row)
+                
+            styled_df = df_spreads.style.format({
+                "Short PX": "{:.2f}",
+                "Long PX": "{:.2f}",
+                "Spread": "{:.2f}",
+                "Premiums": "${:,.0f}" 
+            }).apply(highlight_target, axis=1)
             
-        styled_df = df_spreads.style.format({
-            "Short PX": "{:.2f}",
-            "Long PX": "{:.2f}",
-            "Spread": "{:.2f}",
-            "Premiums": "${:,.0f}" 
-        }).apply(highlight_target, axis=1)
-        
-        # --- THE SCROLLABLE FIX ---
-        # Added height=350 to lock the container size and allow internal scrolling
-        selection_event = st.dataframe(
-            styled_df, 
-            hide_index=True, 
-            use_container_width=True,
-            height=350, 
-            on_select="rerun",
-            selection_mode="single-row"
-        )
+            selection_event = st.dataframe(
+                styled_df, 
+                hide_index=True, 
+                use_container_width=True,
+                height=350, 
+                on_select="rerun",
+                selection_mode="single-row"
+            )
+        else:
+            st.info("No spreads available — options data may be unavailable outside market hours.")
+            selection_event = None
 
-        # --- NEW: Save the selection to permanent memory! ---
-        if len(selection_event.selection.rows) > 0:
+        if selection_event is not None and len(selection_event.selection.rows) > 0:
             selected_idx = selection_event.selection.rows[0]
             current_short = df_spreads.iloc[selected_idx]['Strike']
             

@@ -53,9 +53,10 @@ def fetch_live_quote(symbol="$SPX"):
     
     response = requests.get(url, headers=headers, params={"symbols": symbol})
     
-    # 401 means Unauthorized (Token Expired!)
     if response.status_code == 401:
         new_token = refresh_access_token()
+        if new_token is None:
+            return None
         headers["Authorization"] = f"Bearer {new_token}"
         response = requests.get(url, headers=headers, params={"symbols": symbol})
         
@@ -102,6 +103,8 @@ def fetch_price_history(symbol="$SPX", period_type="day", period=1, freq_type="m
     response = requests.get(url, headers=headers, params=params)
     if response.status_code == 401:
         new_token = refresh_access_token()
+        if new_token is None:
+            return None
         headers["Authorization"] = f"Bearer {new_token}"
         response = requests.get(url, headers=headers, params=params)
         
@@ -122,13 +125,16 @@ def fetch_options_chain(symbol="$SPX"):
         "symbol": symbol,
         "contractType": "PUT",
         "includeQuotes": "TRUE",
-        "range": "OTM", # Only grab Out-of-the-Money
-        "daysToExpiration": 5 # Limit to near-term expirations (0DTE/closest)
+        "range": "OTM",
+        "strikeCount": 150,
+        "daysToExpiration": 5
     }
     
     response = requests.get(url, headers=headers, params=params)
     if response.status_code == 401:
         new_token = refresh_access_token()
+        if new_token is None:
+            return None
         headers["Authorization"] = f"Bearer {new_token}"
         response = requests.get(url, headers=headers, params=params)
         
