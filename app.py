@@ -251,7 +251,7 @@ with col_left:
         m2.metric(label="SPX Open", value=f"{spx_open:,.0f}")
         m3.metric(label="SPX Last", value=f"{spx_last:,.0f}")
         
-        _, v1, v2 = st.columns(3)
+        v1, v2, _ = st.columns(3)
         v1.metric(label="VIX", value=f"{vix_last:,.0f}") 
         v2.metric(label="VIX9D", value=f"{vix9d_last:,.0f}") 
         
