@@ -4,6 +4,8 @@ import base64
 import streamlit as st
 import os
 
+import gist_sync
+
 TOKEN_PATH = '.streamlit/schwab_tokens.json'
 
 def refresh_access_token():
@@ -13,7 +15,6 @@ def refresh_access_token():
     with open(TOKEN_PATH, 'r') as f:
         tokens = json.load(f)
         
-    # Streamlit securely loads your keys from secrets.toml
     APP_KEY = st.secrets["schwab"]["APP_KEY"]
     APP_SECRET = st.secrets["schwab"]["APP_SECRET"]
     
@@ -30,12 +31,13 @@ def refresh_access_token():
     
     if response.status_code == 200:
         new_tokens = response.json()
-        # Schwab sometimes doesn't send a new refresh token, so we keep the old one just in case
         if 'refresh_token' not in new_tokens:
             new_tokens['refresh_token'] = tokens['refresh_token']
             
         with open(TOKEN_PATH, 'w') as f:
             json.dump(new_tokens, f)
+
+        gist_sync.push_tokens_to_gist(new_tokens, use_streamlit=True)
             
         return new_tokens['access_token']
     else:

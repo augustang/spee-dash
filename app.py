@@ -11,11 +11,16 @@ import schwab_client
 import os
 import json
 
-# --- CLOUD DEPLOYMENT FIX: Rebuild the Schwab tokens file from Secrets ---
+# --- CLOUD DEPLOYMENT: Fetch latest Schwab tokens from GitHub Gist ---
 if not os.path.exists('.streamlit/schwab_tokens.json'):
     os.makedirs('.streamlit', exist_ok=True)
-    with open('.streamlit/schwab_tokens.json', 'w') as f:
-        f.write(st.secrets["SCHWAB_TOKENS_JSON"])
+    import gist_sync
+    tokens = gist_sync.fetch_tokens_from_gist(use_streamlit=True)
+    if tokens:
+        with open('.streamlit/schwab_tokens.json', 'w') as f:
+            json.dump(tokens, f)
+    else:
+        st.error("Could not fetch Schwab tokens from Gist. Check your gist secrets.")
 
 # --- INITIALIZE SESSION STATE MEMORY ---
 if 'selected_short' not in st.session_state:
