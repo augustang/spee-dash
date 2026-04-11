@@ -64,18 +64,21 @@ now = datetime.datetime.now(eastern)
 date_str = now.strftime("%A %B %-d, %Y")
 time_str = now.strftime("%H:%M")
 
-market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+@st.cache_data(ttl=300, show_spinner=False)
+def get_market_hours():
+    return schwab_client.fetch_market_hours()
 
-if now < market_open:
-    status_str = "(Market Pre-Open)"
-elif now > market_close:
-    status_str = "(Market Closed)"
-else:
-    time_diff = market_close - now
+market_info = get_market_hours()
+
+if market_info and market_info['isOpen']:
+    time_diff = market_info['end'] - now
     hours = int(time_diff.total_seconds() // 3600)
     minutes = int((time_diff.total_seconds() % 3600) // 60)
     status_str = f"{hours}h {minutes}m until close"
+elif market_info:
+    status_str = "(Market Closed)"
+else:
+    status_str = ""
 
 header_html = f"""
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
@@ -89,7 +92,7 @@ header_html = f"""
 st.markdown(header_html, unsafe_allow_html=True)
 
 # 3. Live Schwab Data Fetching Logic
-@st.cache_data(ttl=60) # Refreshes metrics every minute
+@st.cache_data(ttl=60, show_spinner=False)
 def get_spx_metrics():
     try:
         quote_data = schwab_client.fetch_live_quote("$SPX")
@@ -126,73 +129,72 @@ vix9d_quote = schwab_client.fetch_live_quote("$VIX9D") # Sometimes $VX9D dependi
 vix_last = vix_quote['lastPrice'] if vix_quote else 0.00
 vix9d_last = vix9d_quote['lastPrice'] if vix9d_quote else 0.00
 
-# --- FETCH SPX HISTORY (Bulletproof Timezone & Exact Milliseconds) ---
-@st.cache_data(ttl=60)
-def get_spx_history(period="1d", interval="5m"):
+# --- FETCH SPX HISTORY: INTRADAY (1d/3d/5d) ---
+@st.cache_data(ttl=60, show_spinner=False)
+def get_spx_history_intraday(period="1d"):
     import time
-    import datetime
-    import pytz
     import pandas as pd
-    
+
     now_ms = int(time.time() * 1000)
-    
-    # 1. INTRADAY CHARTS (5-minute candles)
-    if period in ["1d", "3d", "5d"]:
-        p_type, f_type, f_val = "day", "minute", 5
-        start_ms = now_ms - (86400 * 1000 * 10) # 10-day wide net to catch trading days safely
-        
-        history_data = schwab_client.fetch_price_history(
-            symbol="$SPX", period_type=p_type, freq_type=f_type, freq=f_val,
-            start_date=start_ms, end_date=now_ms
-        )
-        
-    # 2. HISTORICAL CHARTS (Daily candles using explicit timestamps!)
-    elif period == "1mo":
-        start_ms = now_ms - (86400 * 1000 * 30) # Exactly 30 days ago
-        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="year", freq_type="daily", freq=1, start_date=start_ms, end_date=now_ms)
-    elif period == "3mo":
-        start_ms = now_ms - (86400 * 1000 * 90) # Exactly 90 days ago
-        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="year", freq_type="daily", freq=1, start_date=start_ms, end_date=now_ms)
-    elif period == "6mo":
-        start_ms = now_ms - (86400 * 1000 * 180) # Exactly 180 days ago
-        history_data = schwab_client.fetch_price_history(symbol="$SPX", period_type="year", freq_type="daily", freq=1, start_date=start_ms, end_date=now_ms)
-    else:
-        return pd.DataFrame()
+    start_ms = now_ms - (86400 * 1000 * 10)
+
+    history_data = schwab_client.fetch_price_history(
+        symbol="$SPX", period_type="day", freq_type="minute", freq=5,
+        start_date=start_ms, end_date=now_ms
+    )
 
     if history_data and 'candles' in history_data:
         df = pd.DataFrame(history_data['candles'])
-        
         if df.empty:
             return df
-            
-        # Convert UTC to America/New_York explicitly
         df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
         df['datetime'] = df['datetime'].dt.tz_localize('UTC').dt.tz_convert('America/New_York').dt.tz_localize(None)
-        
-        # --- THE BULLETPROOF TRADING DAY FILTER ---
-        if period in ["1d", "3d", "5d"]:
-            unique_dates = sorted(df['datetime'].dt.date.unique())
-            if period == "1d":
-                target_dates = unique_dates[-1:]
-            elif period == "3d":
-                target_dates = unique_dates[-3:]
-            elif period == "5d":
-                target_dates = unique_dates[-5:]
-            df = df[df['datetime'].dt.date.isin(target_dates)]
-            
-        # --- HISTORICAL CLEANUP ---
-        # Strip out the exact midnight times so the x-axis looks clean and crisp
-        if period in ["1mo", "3mo", "6mo"]:
-            df['datetime'] = df['datetime'].dt.normalize()
-            
+
+        unique_dates = sorted(df['datetime'].dt.date.unique())
+        day_map = {"1d": -1, "3d": -3, "5d": -5}
+        target_dates = unique_dates[day_map.get(period, -1):]
+        df = df[df['datetime'].dt.date.isin(target_dates)]
+
         df.set_index('datetime', inplace=True)
         df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
         return df
-        
+
+    return pd.DataFrame()
+
+
+# --- FETCH SPX HISTORY: HISTORICAL (1mo/3mo/6mo) ---
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_spx_history_historical(period="1mo"):
+    import time
+    import pandas as pd
+
+    now_ms = int(time.time() * 1000)
+    days_map = {"1mo": 30, "3mo": 90, "6mo": 180}
+    days = days_map.get(period, 30)
+    start_ms = now_ms - (86400 * 1000 * days)
+
+    history_data = schwab_client.fetch_price_history(
+        symbol="$SPX", period_type="year", freq_type="daily", freq=1,
+        start_date=start_ms, end_date=now_ms
+    )
+
+    if history_data and 'candles' in history_data:
+        df = pd.DataFrame(history_data['candles'])
+        if df.empty:
+            return df
+        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+        df['datetime'] = df['datetime'].dt.tz_localize('UTC').dt.tz_convert('America/New_York').dt.tz_localize(None)
+
+        df['datetime'] = df['datetime'].dt.normalize()
+
+        df.set_index('datetime', inplace=True)
+        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
+        return df
+
     return pd.DataFrame()
 
 # --- FETCH LIVE OPTIONS DATA ---
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=60, show_spinner=False)
 def get_spx_puts():
     try:
         chain_data = schwab_client.fetch_options_chain("$SPX")
@@ -225,7 +227,18 @@ def get_spx_puts():
         return pd.DataFrame()
 
 # Actually call the function to get the data using our global spx_last variable
+_loader = st.empty()
+_loader.markdown(
+    '<div style="display: flex; align-items: center; gap: 8px; color: #888; font-size: 13px; font-weight: 400; padding: 8px 0; font-family: Inter, sans-serif;">'
+    '<div style="width: 14px; height: 14px; border: 2px solid #ddd; border-top: 2px solid #888; '
+    'border-radius: 50%; animation: spin 0.8s linear infinite;"></div>'
+    'Loading spreads'
+    '</div>'
+    '<style>@keyframes spin { to { transform: rotate(360deg); } }</style>',
+    unsafe_allow_html=True,
+)
 live_puts_df = get_spx_puts()
+_loader.empty()
 
 # 4. Main Layout Columns
 col_left, col_right = st.columns([1.3, 2.7], gap="medium")
@@ -234,46 +247,51 @@ with col_left:
     st.markdown('<div class="section-label">Metrics</div>', unsafe_allow_html=True)
     with st.container(border=True):
         m1, m2, m3 = st.columns(3)
-        # These are live variables, so we use the f-string formatting
-        m1.metric(label="SPX Open", value=f"{spx_open:,.0f}")
-        m2.metric(label="SPX Last", value=f"{spx_last:,.0f}")
+        m1.metric(label="SPX Prior Close", value=f"{spx_prior_close:,.0f}")
+        m2.metric(label="SPX Open", value=f"{spx_open:,.0f}")
+        m3.metric(label="SPX Last", value=f"{spx_last:,.0f}")
         
-        # --- CUSTOM PILL: Change from open ---
-        with m3:
-            st.markdown('<p style="font-size: 12px; color: #000000; margin-bottom: -10px;">Change from open</p>', unsafe_allow_html=True)
-            pts_change = spx_last - spx_open
-            pct_change = (pts_change / spx_open) * 100
+        _, v1, v2 = st.columns(3)
+        v1.metric(label="VIX", value=f"{vix_last:,.0f}") 
+        v2.metric(label="VIX9D", value=f"{vix9d_last:,.0f}") 
+        
+        c1, c2, c3 = st.columns(3)
+
+        gap_pts = spx_open - spx_prior_close
+        gap_pct = (gap_pts / spx_prior_close) * 100
+        with c1:
+            st.markdown('<p style="font-size: 12px; color: #000000; margin-bottom: -10px;">Overnight</p>', unsafe_allow_html=True)
+            bg_g = "#6DF08C" if gap_pts >= 0 else "#FF4646"
+            text_g = "#000000" if gap_pts >= 0 else "#FFFFFF"
+            arr_g = "↑" if gap_pts >= 0 else "↓"
+            st.markdown(f'<div style="background-color: {bg_g}; color: {text_g}; padding: 4px 8px; border-radius: 8px; display: inline-block; font-weight: 400; font-size: 12px; margin-top: 10px;">{arr_g} {abs(gap_pts):.2f} pts ({abs(gap_pct):.2f}%)</div>', unsafe_allow_html=True)
+
+        pts_change = spx_last - spx_open
+        pct_change = (pts_change / spx_open) * 100
+        with c2:
+            st.markdown('<p style="font-size: 12px; color: #000000; margin-bottom: -10px;">Since open</p>', unsafe_allow_html=True)
             bg = "#6DF08C" if pts_change >= 0 else "#FF4646"
             text = "#000000" if pts_change >= 0 else "#FFFFFF"
             arr = "↑" if pts_change >= 0 else "↓"
             st.markdown(f'<div style="background-color: {bg}; color: {text}; padding: 4px 8px; border-radius: 8px; display: inline-block; font-weight: 400; font-size: 12px; margin-top: 10px;">{arr} {abs(pts_change):.2f} pts ({abs(pct_change):.2f}%)</div>', unsafe_allow_html=True)
-        
-        st.write("")
-        
-        m4, m5, m6 = st.columns(3)
-        # Now these are using live data!
-        m4.metric(label="SPX Prior Close", value=f"{spx_prior_close:,.0f}") 
-        v1, v2 = m5.columns(2)
-        v1.metric(label="VIX9D", value=f"{vix9d_last:,.0f}") 
-        v2.metric(label="VIX", value=f"{vix_last:,.0f}") 
-        
-        # --- CUSTOM PILL: Change from prior close ---
-        with m6:
-            st.markdown('<p style="font-size: 12px; color: #000000; margin-bottom: -10px;">Change from prior close</p>', unsafe_allow_html=True)
-            prior_pts = spx_last - spx_prior_close
-            prior_pct = (prior_pts / spx_prior_close) * 100
+
+        prior_pts = spx_last - spx_prior_close
+        prior_pct = (prior_pts / spx_prior_close) * 100
+        with c3:
+            st.markdown('<p style="font-size: 12px; color: #000000; margin-bottom: -10px;">Prior close</p>', unsafe_allow_html=True)
             bg2 = "#6DF08C" if prior_pts >= 0 else "#FF4646"
             text2 = "#000000" if prior_pts >= 0 else "#FFFFFF"
             arr2 = "↑" if prior_pts >= 0 else "↓"
             st.markdown(f'<div style="background-color: {bg2}; color: {text2}; padding: 4px 8px; border-radius: 8px; display: inline-block; font-weight: 400; font-size: 12px; margin-top: 10px;">{arr2} {abs(prior_pts):.2f} pts ({abs(prior_pct):.2f}%)</div>', unsafe_allow_html=True)
 
-        st.write("")
+        st.markdown('<div style="margin-top: 20px;"></div>', unsafe_allow_html=True)
         
         # --- THE CALLBACK: Forces the math to run only when inputs are changed ---
         def update_contracts():
             bp = st.session_state.saved_bp
             sw = st.session_state.saved_spread
             st.session_state.saved_contracts = int(bp / (sw * 100))
+            st.session_state.saved_target = int(st.session_state.saved_contracts * 0.10 * 100)
 
         in1, in2 = st.columns(2)
         # Added on_change callbacks, and removed 'value' so they rely on memory!
@@ -365,22 +383,18 @@ with col_left:
             selected_idx = selection_event.selection.rows[0]
             current_short = df_spreads.iloc[selected_idx]['Strike']
             
-            # THE FIX: Only overwrite the input boxes if you clicked a DIFFERENT spread!
             if current_short != st.session_state.last_selected_short:
-                new_px = float(df_spreads.iloc[selected_idx]['Spread'])
-                
-                st.session_state.selected_spread_px = new_px
                 st.session_state.selected_short = current_short
                 st.session_state.selected_long = df_spreads.iloc[selected_idx]['Leg']
-                
-                # Overwrite the inputs with the new defaults
-                st.session_state.saved_entry = new_px
-                st.session_state.saved_close = float(math.ceil(new_px * 20) / 20.0) if new_px > 0 else 0.00
-                
-                # Update the tracker so it doesn't loop next time!
+                st.session_state.saved_entry = float(df_spreads.iloc[selected_idx]['Spread'])
+                st.session_state.saved_close = 0.05
                 st.session_state.last_selected_short = current_short
-                
-        # Pull the values BACK OUT of memory to use in the rest of the app
+
+        if st.session_state.selected_short is not None and not df_spreads.empty:
+            match = df_spreads[df_spreads['Strike'] == st.session_state.selected_short]
+            if not match.empty:
+                st.session_state.selected_spread_px = float(match.iloc[0]['Spread'])
+
         selected_short = st.session_state.selected_short
         selected_long = st.session_state.selected_long
         selected_spread_px = st.session_state.selected_spread_px
@@ -392,19 +406,18 @@ with col_left:
     with st.container(border=True):
         col1, col2, col3, col4 = st.columns(4)
         
-        # THE FIX: We removed 'value=...' so Streamlit strictly relies on the 'key' memory!
-        entry_px = col1.number_input("Entry PX", step=0.05, key="saved_entry")
+        col1.number_input("Entry PX", value=st.session_state.saved_entry, disabled=True)
         
-        # Current PX is disabled and not tied to memory, so it keeps its value parameter
         col2.number_input("Current PX", value=float(selected_spread_px), disabled=True)
         
-        # THE FIX: Removed 'value=...' here too!
-        realistic_close = col3.number_input("Realistic Close", step=0.05, key="saved_close")
+        realistic_close = col3.number_input(
+            "Realistic Close", step=0.05, min_value=0.00,
+            format="%.2f", key="saved_close"
+        )
         
+        entry_px = st.session_state.saved_entry
         realistic_pl = (entry_px - realistic_close) * contracts * 100
-        
         pl_string = f"+${realistic_pl:,.0f}" if realistic_pl >= 0 else f"-${abs(realistic_pl):,.0f}"
-        
         col4.text_input("Realistic P/L", value=pl_string, disabled=True)
 
 with col_right:
@@ -505,7 +518,7 @@ with col_right:
                 label_visibility="collapsed" 
             )
             
-            df_day = get_spx_history(period=day_params[selected_option], interval="5m")
+            df_day = get_spx_history_intraday(period=day_params[selected_option])
             f_last, f_open, f_prior, f_delta = get_spx_metrics()
             
             is_spx_down = (f_last - f_open) < 0
@@ -523,13 +536,11 @@ with col_right:
     render_day_chart()
 
     # 4. MONTH CHART FRAGMENT
-    @st.fragment(run_every=60)
+    @st.fragment(run_every=120)
     def render_month_chart():
-        # We define the variables safely inside the soundproof room!
         month_params = {"6 Months": "6mo","3 Months": "3mo","1 Month": "1mo"}
         
         with st.container(border=True):
-            # This puts the button inside the box and collapses the title text!
             selected_option = st.radio(
                 "Historical Timeframe", 
                 list(month_params.keys()), 
@@ -538,8 +549,19 @@ with col_right:
                 label_visibility="collapsed"
             )
             
-            df_month = get_spx_history(period=month_params[selected_option], interval="1d") 
+            df_month = get_spx_history_historical(period=month_params[selected_option])
             f_last, f_open, f_prior, f_delta = get_spx_metrics()
+
+            if not df_month.empty:
+                now_ts = pd.Timestamp.now('America/New_York').tz_localize(None).normalize()
+                if now_ts not in df_month.index:
+                    live_row = pd.DataFrame(
+                        {'Open': f_last, 'High': f_last, 'Low': f_last, 'Close': f_last},
+                        index=[now_ts]
+                    )
+                    df_month = pd.concat([df_month, live_row])
+                else:
+                    df_month.loc[now_ts, 'Close'] = f_last
             
             is_spx_down = (f_last - f_open) < 0
             spx_theme_color = "#FF3D54" if is_spx_down else "#11F185" 

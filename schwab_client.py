@@ -44,6 +44,45 @@ def refresh_access_token():
         print("❌ CRITICAL: Failed to refresh token. You may need to run schwab_auth.py again.")
         return None
 
+def fetch_market_hours():
+    """Returns {'isOpen': bool, 'start': datetime, 'end': datetime} or None."""
+    from datetime import datetime
+    import pytz
+
+    with open(TOKEN_PATH, 'r') as f:
+        tokens = json.load(f)
+
+    access_token = tokens['access_token']
+    eastern = pytz.timezone('America/New_York')
+    today = datetime.now(eastern).strftime('%Y-%m-%d')
+
+    url = "https://api.schwabapi.com/marketdata/v1/markets"
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    params = {"markets": "equity", "date": today}
+
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code == 401:
+        new_token = refresh_access_token()
+        if new_token is None:
+            return None
+        headers["Authorization"] = f"Bearer {new_token}"
+        response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code != 200:
+        return None
+
+    try:
+        eq = response.json()['equity']['EQ']
+        is_open = eq.get('isOpen', False)
+        session = eq.get('sessionHours', {}).get('regularMarket', [{}])[0]
+        start = datetime.fromisoformat(session['start']).astimezone(eastern)
+        end = datetime.fromisoformat(session['end']).astimezone(eastern)
+        return {'isOpen': is_open, 'start': start, 'end': end}
+    except (KeyError, IndexError, TypeError):
+        return {'isOpen': False, 'start': None, 'end': None}
+
+
 def fetch_live_quote(symbol="$SPX"):
     """Fetches a live quote, automatically refreshing the token if needed."""
     with open(TOKEN_PATH, 'r') as f:
@@ -128,8 +167,8 @@ def fetch_options_chain(symbol="$SPX"):
         "contractType": "PUT",
         "includeQuotes": "TRUE",
         "range": "OTM",
-        "strikeCount": 150,
-        "daysToExpiration": 5
+        "strikeCount": 90,
+        "daysToExpiration": 1
     }
     
     response = requests.get(url, headers=headers, params=params)
