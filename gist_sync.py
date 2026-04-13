@@ -2,6 +2,8 @@
 Read/write schwab_tokens.json to a private GitHub Gist so that
 Streamlit Cloud always has the latest tokens without manual paste.
 """
+from __future__ import annotations
+
 import json
 import requests
 import os

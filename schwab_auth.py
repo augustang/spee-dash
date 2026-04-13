@@ -13,6 +13,7 @@ What it does:
     3. Exchanges the auth code for tokens.
     4. Saves tokens locally AND pushes them to your private GitHub Gist.
 """
+from __future__ import annotations
 
 import base64
 import json

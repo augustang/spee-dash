@@ -70,11 +70,21 @@ def get_market_hours():
 
 market_info = get_market_hours()
 
-if market_info and market_info['isOpen']:
-    time_diff = market_info['end'] - now
-    hours = int(time_diff.total_seconds() // 3600)
-    minutes = int((time_diff.total_seconds() % 3600) // 60)
-    status_str = f"{hours}h {minutes}m until close"
+if market_info and market_info.get('start') and market_info.get('end'):
+    mkt_start = market_info['start']
+    mkt_end = market_info['end']
+    if now < mkt_start:
+        time_diff = mkt_start - now
+        hours = int(time_diff.total_seconds() // 3600)
+        minutes = int((time_diff.total_seconds() % 3600) // 60)
+        status_str = f"{hours}h {minutes}m until open"
+    elif now <= mkt_end:
+        time_diff = mkt_end - now
+        hours = int(time_diff.total_seconds() // 3600)
+        minutes = int((time_diff.total_seconds() % 3600) // 60)
+        status_str = f"{hours}h {minutes}m until close"
+    else:
+        status_str = "(Market Closed)"
 elif market_info:
     status_str = "(Market Closed)"
 else:
