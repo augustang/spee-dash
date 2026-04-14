@@ -416,7 +416,8 @@ with col_left:
     with st.container(border=True):
         col1, col2, col3, col4 = st.columns(4)
         
-        col1.number_input("Entry PX", value=st.session_state.saved_entry, disabled=True)
+        col1.number_input("Entry PX", step=0.05, min_value=0.00,
+                          format="%.2f", key="saved_entry")
         
         col2.number_input("Current PX", value=float(selected_spread_px), disabled=True)
         
