@@ -179,7 +179,7 @@ def get_spx_history_historical(period="1mo"):
     import pandas as pd
 
     now_ms = int(time.time() * 1000)
-    days_map = {"1mo": 30, "3mo": 90, "6mo": 180}
+    days_map = {"1mo": 30, "3mo": 90, "6mo": 180, "8mo": 240, "12mo": 365}
     days = days_map.get(period, 30)
     start_ms = now_ms - (86400 * 1000 * days)
 
@@ -549,12 +549,13 @@ with col_right:
     # 4. MONTH CHART FRAGMENT
     @st.fragment(run_every=120)
     def render_month_chart():
-        month_params = {"6 Months": "6mo","3 Months": "3mo","1 Month": "1mo"}
+        month_params = {"12 Months": "12mo", "8 Months": "8mo", "6 Months": "6mo", "3 Months": "3mo", "1 Month": "1mo"}
         
         with st.container(border=True):
             selected_option = st.radio(
                 "Historical Timeframe", 
                 list(month_params.keys()), 
+                index=2,
                 horizontal=True, 
                 key="month_radio",
                 label_visibility="collapsed"
