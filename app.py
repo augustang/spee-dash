@@ -58,6 +58,66 @@ def load_css(file_name):
 
 load_css("style.css")
 
+# --- FINANCIAL EVENT DATE HELPERS ---
+def _nth_weekday(year, month, weekday, n):
+    """Return the nth occurrence of a weekday in a given month (1-indexed).
+    weekday: 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri"""
+    first = datetime.date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + datetime.timedelta(days=offset + 7 * (n - 1))
+
+FOMC_DATES = [
+    datetime.date(2025, 1, 29), datetime.date(2025, 3, 19),
+    datetime.date(2025, 5, 7),  datetime.date(2025, 6, 18),
+    datetime.date(2025, 7, 30), datetime.date(2025, 9, 17),
+    datetime.date(2025, 10, 29), datetime.date(2025, 12, 17),
+    datetime.date(2026, 1, 28), datetime.date(2026, 3, 18),
+    datetime.date(2026, 5, 6),  datetime.date(2026, 6, 17),
+    datetime.date(2026, 7, 29), datetime.date(2026, 9, 16),
+    datetime.date(2026, 10, 28), datetime.date(2026, 12, 16),
+]
+
+def get_financial_events(start_date, end_date):
+    """Return sorted list of (datetime, label) for financial events in range."""
+    start_d = start_date.date() if hasattr(start_date, 'date') else start_date
+    end_d = end_date.date() if hasattr(end_date, 'date') else end_date
+    events = []
+
+    current = datetime.date(start_d.year, start_d.month, 1)
+    while current <= end_d:
+        y, m = current.year, current.month
+
+        opex = _nth_weekday(y, m, 4, 3)
+        if start_d <= opex <= end_d:
+            events.append((opex, f"{opex.strftime('%b')} OPEX"))
+
+        next_y, next_m = (y, m + 1) if m < 12 else (y + 1, 1)
+        vix_exp = _nth_weekday(next_y, next_m, 4, 3) - datetime.timedelta(days=30)
+        if start_d <= vix_exp <= end_d:
+            events.append((vix_exp, "VIX Exp"))
+
+        if m == 11:
+            tday = _nth_weekday(y, 11, 3, 4)
+            if start_d <= tday <= end_d:
+                events.append((tday, "Thanksgiving"))
+
+        if m == 12:
+            xmas = datetime.date(y, 12, 25)
+            nye = datetime.date(y, 12, 31)
+            if start_d <= xmas <= end_d:
+                events.append((xmas, "Xmas"))
+            if start_d <= nye <= end_d:
+                events.append((nye, "NYE"))
+
+        current = datetime.date(y + (1 if m == 12 else 0), (m % 12) + 1, 1)
+
+    for d in FOMC_DATES:
+        if start_d <= d <= end_d:
+            events.append((d, "FOMC"))
+
+    events.sort(key=lambda x: x[0])
+    return events
+
 # 2. Header & Live Time Logic
 eastern = pytz.timezone('America/New_York')
 now = datetime.datetime.now(eastern)
@@ -226,7 +286,8 @@ def get_spx_puts():
                 'strike': float(strike),
                 'lastPrice': option['last'] if option['last'] > 0 else option['mark'],
                 'bid': option['bid'],
-                'ask': option['ask']
+                'ask': option['ask'],
+                'delta': option.get('delta', 0),
             })
             
         df = pd.DataFrame(put_list)
@@ -431,12 +492,42 @@ with col_left:
         pl_string = f"+${realistic_pl:,.0f}" if realistic_pl >= 0 else f"-${abs(realistic_pl):,.0f}"
         col4.text_input("Realistic P/L", value=pl_string, disabled=True)
 
+    # --- PROBABILITY OTM SECTION ---
+    st.write("")
+    st.markdown('<div class="section-label">Probability OTM</div>', unsafe_allow_html=True)
+
+    with st.container(border=True):
+        short_prob = "—"
+        long_prob = "—"
+        if selected_short is not None and not live_puts_df.empty and 'delta' in live_puts_df.columns:
+            short_match = live_puts_df[live_puts_df['strike'] == float(selected_short)]
+            if not short_match.empty:
+                short_prob = f"{(1 - abs(short_match.iloc[0]['delta'])) * 100:.1f}%"
+        if selected_long is not None and not live_puts_df.empty and 'delta' in live_puts_df.columns:
+            long_match = live_puts_df[live_puts_df['strike'] == float(selected_long)]
+            if not long_match.empty:
+                long_prob = f"{(1 - abs(long_match.iloc[0]['delta'])) * 100:.1f}%"
+
+        def _prob_field(label, value):
+            return f'''<div>
+                <p style="font-size:12px;color:#000;margin-bottom:4px;">{label}</p>
+                <div style="background:#F1F2F6;border-radius:8px;padding:8px 12px;font-size:12px;color:#000;">{value}</div>
+            </div>
+            <div style="margin-bottom:12px;"></div>'''
+        p1, p2, p3, p4 = st.columns(4)
+        strike_val = f"{int(selected_short)}" if selected_short else "—"
+        leg_val = f"{int(selected_long)}" if selected_long else "—"
+        p1.markdown(_prob_field("Strike", strike_val), unsafe_allow_html=True)
+        p2.markdown(_prob_field("Probability", short_prob), unsafe_allow_html=True)
+        p3.markdown(_prob_field("Leg", leg_val), unsafe_allow_html=True)
+        p4.markdown(_prob_field("Probability", long_prob), unsafe_allow_html=True)
+
 with col_right:
     st.markdown('<div class="section-label">Charts</div>', unsafe_allow_html=True)
 
     # 2. THE CHART DRAWING ENGINE
-    def create_spx_chart(title, prices, dates, line_color, halo_color):
-        fig = go.Figure() # This creates the canvas!
+    def create_spx_chart(title, prices, dates, line_color, halo_color, events=None, chart_height=420, view_range=None):
+        fig = go.Figure()
         
         # Main line trace
         fig.add_trace(go.Scatter(
@@ -460,12 +551,26 @@ with col_right:
                 hoverinfo='skip'
             ))
             
-        # Calculate 5% breathing room
+        # Calculate breathing room (extend to cover upcoming events if present)
+        y_range = None
         if len(dates) > 0:
             min_date = dates.min()
             max_date = dates.max()
             date_range = max_date - min_date
             padded_max_date = max_date + (date_range * 0.05)
+            if events:
+                last_evt = pd.Timestamp(max(e[0] for e in events))
+                if last_evt > padded_max_date:
+                    padded_max_date = last_evt + (date_range * 0.02)
+            view_left = view_range if view_range is not None else min_date
+            visible = prices[(dates >= view_left) & (dates <= padded_max_date)]
+            if len(visible) > 0:
+                y_min, y_max = visible.min(), visible.max()
+                if selected_short is not None:
+                    y_min = min(y_min, float(selected_long or selected_short))
+                    y_max = max(y_max, float(selected_short))
+                y_pad = (y_max - y_min) * 0.05
+                y_range = [y_min - y_pad, y_max + y_pad]
         else:
             min_date, padded_max_date = None, None
             
@@ -484,12 +589,31 @@ with col_right:
                 annotation=dict(font_size=8, font_color="white", bgcolor="#FF6347", borderpad=3, bordercolor="#FF6347")
             )
             
+        if events:
+            from collections import defaultdict
+            grouped = defaultdict(list)
+            for evt_date, evt_label in events:
+                grouped[evt_date].append(evt_label)
+            for evt_date, labels in grouped.items():
+                evt_dt = datetime.datetime.combine(evt_date, datetime.time()) if isinstance(evt_date, datetime.date) else evt_date
+                if min_date is not None and pd.Timestamp(min_date) <= pd.Timestamp(evt_dt) <= pd.Timestamp(padded_max_date):
+                    combined = ", ".join(labels)
+                    fig.add_shape(
+                        type="line", x0=evt_dt, x1=evt_dt, y0=0, y1=1,
+                        yref="paper", line=dict(dash="1px,3px", color="#B2B2B2", width=1),
+                    )
+                    fig.add_annotation(
+                        x=evt_dt, y=1.01, yref="paper", text=combined,
+                        textangle=-90, font=dict(size=7, color="#888888"),
+                        showarrow=False, yanchor="bottom", xanchor="center",
+                    )
+
         # Layout rules
         fig.update_layout(
             dragmode="zoom",
             uirevision="constant", 
-            height=350, 
-            margin=dict(l=60, r=20, t=10, b=30), 
+            height=chart_height, 
+            margin=dict(l=60, r=20, t=70 if events else 10, b=30), 
             plot_bgcolor="white", paper_bgcolor="white",
             hovermode="x unified",
             hoverdistance=-1,
@@ -500,13 +624,15 @@ with col_right:
                 font=dict(color="#1E1E1E")
             ),
             xaxis=dict(
-                showgrid=True, gridcolor="#F0F0F0", range=[min_date, padded_max_date] if min_date else None,
+                showgrid=True, gridcolor="#F0F0F0",
+                range=[view_range if view_range is not None else min_date, padded_max_date] if min_date else None,
                 showspikes=True, spikemode="across", spikesnap="cursor", spikedash="1, 3",     
                 spikecolor="#B2B2B2", spikethickness=1
             ),
             yaxis=dict(
                 automargin=False, 
                 showgrid=True, gridcolor="#F0F0F0", side="left",
+                range=y_range,
                 showspikes=True, spikemode="across", spikesnap="cursor", spikedash="1, 3",     
                 spikecolor="#B2B2B2", spikethickness=1
             )
@@ -552,16 +678,20 @@ with col_right:
         month_params = {"12 Months": "12mo", "8 Months": "8mo", "6 Months": "6mo", "3 Months": "3mo", "1 Month": "1mo"}
         
         with st.container(border=True):
-            selected_option = st.radio(
-                "Historical Timeframe", 
-                list(month_params.keys()), 
-                index=2,
-                horizontal=True, 
-                key="month_radio",
-                label_visibility="collapsed"
-            )
+            radio_col, toggle_col = st.columns([3, 1])
+            with radio_col:
+                selected_option = st.radio(
+                    "Historical Timeframe", 
+                    list(month_params.keys()), 
+                    index=2,
+                    horizontal=True, 
+                    key="month_radio",
+                    label_visibility="collapsed"
+                )
+            with toggle_col:
+                show_events = st.checkbox("Events", key="show_events")
             
-            df_month = get_spx_history_historical(period=month_params[selected_option])
+            df_month = get_spx_history_historical(period="12mo")
             f_last, f_open, f_prior, f_delta = get_spx_metrics()
 
             if not df_month.empty:
@@ -579,8 +709,17 @@ with col_right:
             spx_theme_color = "#FF3D54" if is_spx_down else "#11F185" 
             spx_halo_color = 'rgba(255, 61, 84, 0.3)' if is_spx_down else 'rgba(17, 241, 133, 0.3)'
             
+            days_map = {"1mo": 30, "3mo": 90, "6mo": 180, "8mo": 240, "12mo": 365}
+            view_days = days_map[month_params[selected_option]]
+            view_start = now_ts - pd.Timedelta(days=view_days)
+            
+            events = None
+            if show_events and not df_month.empty:
+                lookahead = df_month.index.max() + pd.DateOffset(months=1)
+                events = get_financial_events(df_month.index.min(), lookahead)
+            
             st.plotly_chart(
-                create_spx_chart(selected_option, df_month['Close'], df_month.index, spx_theme_color, spx_halo_color), 
+                create_spx_chart(selected_option, df_month['Close'], df_month.index, spx_theme_color, spx_halo_color, events=events, chart_height=500, view_range=view_start), 
                 use_container_width=True,
                 key="month_spx_chart",
                 config={'displayModeBar': False} 

@@ -199,3 +199,20 @@ div[data-testid="stMetricDelta"] svg {
     height: 14px !important; 
     width: 14px !important;
 }
+
+/* Make disabled text inputs and their labels legible (black text) */
+div[data-baseweb="input"] input:disabled {
+    color: #000000 !important;
+    -webkit-text-fill-color: #000000 !important;
+}
+.stTextInput label {
+    color: #000000 !important;
+}
+
+/* Right-align the Events checkbox and vertically center with radio */
+div[data-testid="stCheckbox"] {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    padding-top: 0.4rem;
+}
