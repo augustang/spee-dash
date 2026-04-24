@@ -526,30 +526,44 @@ with col_right:
     st.markdown('<div class="section-label">Charts</div>', unsafe_allow_html=True)
 
     # 2. THE CHART DRAWING ENGINE
-    def create_spx_chart(title, prices, dates, line_color, halo_color, events=None, chart_height=420, view_range=None):
+    def create_spx_chart(title, prices, dates, line_color, halo_color, events=None, chart_height=420, view_range=None, ohlc_df=None):
         fig = go.Figure()
         
-        # Main line trace
-        fig.add_trace(go.Scatter(
-            x=dates, y=prices, mode='lines', 
-            line=dict(color=line_color, width=2),
-            showlegend=False
-        ))
-        
-        # Add the "Current Position" glowing dot
-        if len(dates) > 0 and len(prices) > 0:
-            last_date = dates[-1]
-            last_price = prices.iloc[-1]
-            fig.add_trace(go.Scatter(
-                x=[last_date], y=[last_price], mode='markers',
-                marker=dict(
-                    color=line_color, 
-                    size=4, 
-                    line=dict(color=halo_color, width=8) 
-                ),
+        if ohlc_df is not None:
+            hover_texts = [
+                f"{d.strftime('%b %-d, %Y')}<br>Open: {o:,.2f}<br>High: {h:,.2f}<br>Low: {l:,.2f}<br>Close: {c:,.2f}"
+                for d, o, h, l, c in zip(ohlc_df.index, ohlc_df['Open'], ohlc_df['High'], ohlc_df['Low'], ohlc_df['Close'])
+            ]
+            fig.add_trace(go.Candlestick(
+                x=ohlc_df.index,
+                open=ohlc_df['Open'], high=ohlc_df['High'],
+                low=ohlc_df['Low'], close=ohlc_df['Close'],
+                increasing=dict(line=dict(color="#11F185", width=1), fillcolor="#11F185"),
+                decreasing=dict(line=dict(color="#FF3D54", width=1), fillcolor="#FF3D54"),
+                line=dict(width=1),
                 showlegend=False,
-                hoverinfo='skip'
+                text=hover_texts,
+                hoverinfo="text",
             ))
+        else:
+            fig.add_trace(go.Scatter(
+                x=dates, y=prices, mode='lines', 
+                line=dict(color=line_color, width=2),
+                showlegend=False
+            ))
+            if len(dates) > 0 and len(prices) > 0:
+                last_date = dates[-1]
+                last_price = prices.iloc[-1]
+                fig.add_trace(go.Scatter(
+                    x=[last_date], y=[last_price], mode='markers',
+                    marker=dict(
+                        color=line_color, 
+                        size=4, 
+                        line=dict(color=halo_color, width=8) 
+                    ),
+                    showlegend=False,
+                    hoverinfo='skip'
+                ))
             
         # Calculate breathing room (extend to cover upcoming events if present)
         y_range = None
@@ -563,14 +577,23 @@ with col_right:
                 if last_evt > padded_max_date:
                     padded_max_date = last_evt + (date_range * 0.02)
             view_left = view_range if view_range is not None else min_date
-            visible = prices[(dates >= view_left) & (dates <= padded_max_date)]
-            if len(visible) > 0:
-                y_min, y_max = visible.min(), visible.max()
-                if selected_short is not None:
-                    y_min = min(y_min, float(selected_long or selected_short))
-                    y_max = max(y_max, float(selected_short))
-                y_pad = (y_max - y_min) * 0.05
-                y_range = [y_min - y_pad, y_max + y_pad]
+            if ohlc_df is not None:
+                vis_df = ohlc_df[(ohlc_df.index >= view_left) & (ohlc_df.index <= padded_max_date)]
+                if len(vis_df) > 0:
+                    y_min, y_max = vis_df['Low'].min(), vis_df['High'].max()
+                else:
+                    y_min, y_max = prices.min(), prices.max()
+            else:
+                visible = prices[(dates >= view_left) & (dates <= padded_max_date)]
+                if len(visible) > 0:
+                    y_min, y_max = visible.min(), visible.max()
+                else:
+                    y_min, y_max = prices.min(), prices.max()
+            if selected_short is not None:
+                y_min = min(y_min, float(selected_long or selected_short))
+                y_max = max(y_max, float(selected_short))
+            y_pad = (y_max - y_min) * 0.05
+            y_range = [y_min - y_pad, y_max + y_pad]
         else:
             min_date, padded_max_date = None, None
             
@@ -615,9 +638,9 @@ with col_right:
             height=chart_height, 
             margin=dict(l=60, r=20, t=70 if events else 10, b=30), 
             plot_bgcolor="white", paper_bgcolor="white",
-            hovermode="x unified",
-            hoverdistance=-1,
-            spikedistance=-1,
+            hovermode="x" if ohlc_df is not None else "x unified",
+            hoverdistance=100 if ohlc_df is not None else -1,
+            spikedistance=100 if ohlc_df is not None else -1,
             hoverlabel=dict(
                 bgcolor="rgba(255, 255, 255, 0.85)", 
                 bordercolor="rgba(0, 0, 0, 0)",
@@ -626,8 +649,10 @@ with col_right:
             xaxis=dict(
                 showgrid=True, gridcolor="#F0F0F0",
                 range=[view_range if view_range is not None else min_date, padded_max_date] if min_date else None,
-                showspikes=True, spikemode="across", spikesnap="cursor", spikedash="1, 3",     
-                spikecolor="#B2B2B2", spikethickness=1
+                rangeslider=dict(visible=False),
+                showspikes=True, spikemode="across",
+                spikesnap="data" if ohlc_df is not None else "cursor",
+                spikedash="1, 3", spikecolor="#B2B2B2", spikethickness=1
             ),
             yaxis=dict(
                 automargin=False, 
@@ -678,7 +703,7 @@ with col_right:
         month_params = {"12 Months": "12mo", "8 Months": "8mo", "6 Months": "6mo", "3 Months": "3mo", "1 Month": "1mo"}
         
         with st.container(border=True):
-            radio_col, toggle_col = st.columns([3, 1])
+            radio_col, ev_col, line_col = st.columns([3, 0.5, 0.5])
             with radio_col:
                 selected_option = st.radio(
                     "Historical Timeframe", 
@@ -688,8 +713,10 @@ with col_right:
                     key="month_radio",
                     label_visibility="collapsed"
                 )
-            with toggle_col:
+            with ev_col:
                 show_events = st.checkbox("Events", key="show_events")
+            with line_col:
+                show_line = st.checkbox("Line", key="show_line")
             
             df_month = get_spx_history_historical(period="12mo")
             f_last, f_open, f_prior, f_delta = get_spx_metrics()
@@ -718,8 +745,9 @@ with col_right:
                 lookahead = df_month.index.max() + pd.DateOffset(months=1)
                 events = get_financial_events(df_month.index.min(), lookahead)
             
+            candle_data = None if show_line else df_month
             st.plotly_chart(
-                create_spx_chart(selected_option, df_month['Close'], df_month.index, spx_theme_color, spx_halo_color, events=events, chart_height=500, view_range=view_start), 
+                create_spx_chart(selected_option, df_month['Close'], df_month.index, spx_theme_color, spx_halo_color, events=events, chart_height=500, view_range=view_start, ohlc_df=candle_data), 
                 use_container_width=True,
                 key="month_spx_chart",
                 config={'displayModeBar': False} 
