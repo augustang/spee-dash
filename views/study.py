@@ -1,6 +1,7 @@
 """Study page: long-term historical chart, lazy intraday explorer, day stats,
 event-impact analysis, and two-date comparison overlay."""
 import datetime
+import re
 import time
 
 import numpy as np
@@ -90,7 +91,34 @@ def get_spx_daily(years: int) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-# --- LAZY 5-MIN INTRADAY FETCHER (one call per date, cached forever) ---
+# Fixed Jan-2019-to-today daily dataset used exclusively for event impact stats.
+_EVENT_IMPACT_START = datetime.date(2019, 1, 1)
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _get_event_daily_df() -> pd.DataFrame:
+    """Daily SPX closes from Jan 2019 to today — fixed window for event impact stats."""
+    now_ms   = int(time.time() * 1000)
+    start_ms = int(datetime.datetime(_EVENT_IMPACT_START.year, 1, 1).timestamp() * 1000)
+    raw = schwab_client.fetch_price_history(
+        symbol="$SPX", period_type="year", freq_type="daily", freq=1,
+        start_date=start_ms, end_date=now_ms,
+    )
+    if raw and 'candles' in raw:
+        df = pd.DataFrame(raw['candles'])
+        if df.empty:
+            return df
+        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+        df['datetime'] = (
+            df['datetime']
+            .dt.tz_localize('UTC')
+            .dt.tz_convert('America/New_York')
+            .dt.tz_localize(None)
+            .dt.normalize()
+        )
+        df.set_index('datetime', inplace=True)
+        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
+        return df
+    return pd.DataFrame()
 @st.cache_data(ttl=None, show_spinner="Loading 5-minute candles…")
 def get_spx_5min_for_date(d: datetime.date) -> pd.DataFrame:
     # 1. Try the FirstRateData CSV first (SPX index, most accurate).
@@ -221,6 +249,7 @@ with col_stats:
                 value=today - datetime.timedelta(days=1),
                 min_value=min_date,
                 max_value=today,
+                format="MM/DD/YYYY",
                 key="study_intraday_date",
             )
 
@@ -386,6 +415,7 @@ with st.container(border=True):
             value=today - datetime.timedelta(days=2),
             min_value=min_date,
             max_value=today,
+            format="MM/DD/YYYY",
             key="study_compare_date_a",
         )
     with pick2_col:
@@ -394,6 +424,7 @@ with st.container(border=True):
             value=today - datetime.timedelta(days=1),
             min_value=min_date,
             max_value=today,
+            format="MM/DD/YYYY",
             key="study_compare_date_b",
         )
 
@@ -494,6 +525,12 @@ def _compute_event_impact(daily_df: pd.DataFrame, events: list) -> pd.DataFrame:
     pct_change = closes.pct_change() * 100
     trading_days = daily_df.index
 
+    # Normalise labels: collapse "Jan OPEX", "Feb OPEX", etc. → "OPEX"
+    def _norm(label):
+        if "OPEX" in label:
+            return "OPEX"
+        return label
+
     rows = []
     for evt_date, label in events:
         evt_ts = pd.Timestamp(evt_date)
@@ -508,7 +545,7 @@ def _compute_event_impact(daily_df: pd.DataFrame, events: list) -> pd.DataFrame:
         next_ret = pct_change.iloc[evt_loc + 1] if evt_loc + 1 < len(pct_change) else np.nan
 
         rows.append({
-            "type": label,
+            "type": _norm(label),
             "prior": prior_ret,
             "event": evt_ret,
             "next": next_ret,
@@ -537,24 +574,241 @@ def _compute_event_impact(daily_df: pd.DataFrame, events: list) -> pd.DataFrame:
 st.write("")
 st.markdown('<div class="section-label">Event impact</div>', unsafe_allow_html=True)
 with st.container(border=True):
-    if df_long.empty:
-        st.info("Long-term data unavailable, can't compute event impact.")
+    _event_daily = _get_event_daily_df()
+    if _event_daily.empty:
+        st.info("Daily data unavailable — can't compute event impact.")
     else:
-        all_events = get_financial_events(df_long.index.min(), df_long.index.max())
-        impact_df = _compute_event_impact(df_long, all_events)
+        _today = datetime.date.today()
+        all_events = get_financial_events(_EVENT_IMPACT_START, _today)
+        impact_df = _compute_event_impact(_event_daily, all_events)
         if impact_df.empty:
-            st.info("No events fall in the current range.")
+            st.info("No events found in range.")
         else:
             def _color_returns(val):
                 if pd.isna(val):
                     return ''
                 color = "#11F185" if val >= 0 else "#FF3D54"
-                weight = "600"
-                return f'color: {color}; font-weight: {weight};'
+                return f'color: {color}; font-weight: 600;'
 
             ret_cols = ["Prior day avg %", "Event day avg %", "Event day median %", "Next day avg %"]
             styled = impact_df.style.format({c: "{:+.2f}%" for c in ret_cols}).applymap(
                 _color_returns, subset=ret_cols
             )
             st.dataframe(styled, hide_index=True, use_container_width=True)
-            st.caption(f"Computed across the last {years}Y of daily closes ({len(df_long):,} trading days).")
+            st.caption(
+                f"Averaged from Jan {_EVENT_IMPACT_START.year} → today · "
+                f"{len(_event_daily):,} trading days · {len(all_events)} event occurrences"
+            )
+
+# =========================
+# 5. KEY DATES
+# =========================
+st.write("")
+st.markdown('<div class="section-label">Key dates</div>', unsafe_allow_html=True)
+
+# Hand-curated notable SPX single-day moves ≥ ~3% since 2019.
+_NOTABLE_EVENTS: list[tuple[datetime.date, str]] = [
+    (datetime.date(2019, 8,  5),  "Trade war escalation −3.0%"),
+    (datetime.date(2020, 2, 24),  "COVID fears begin −3.4%"),
+    (datetime.date(2020, 2, 27),  "COVID selloff −4.4%"),
+    (datetime.date(2020, 3,  9),  "Black Monday II −7.6%"),
+    (datetime.date(2020, 3, 12),  "COVID crash −9.5%"),
+    (datetime.date(2020, 3, 16),  "Worst day since '87 −12%"),
+    (datetime.date(2020, 3, 24),  "Biggest rally since '33 +9.4%"),
+    (datetime.date(2020, 3, 26),  "Stimulus rally +6.2%"),
+    (datetime.date(2020, 4,  6),  "Stimulus rally II +7.0%"),
+    (datetime.date(2022, 5,  5),  "Fed hike selloff −3.6%"),
+    (datetime.date(2022, 6, 13),  "Bear mkt confirm −3.9%"),
+    (datetime.date(2022, 9, 13),  "Hot CPI shock −4.3%"),
+    (datetime.date(2024, 8,  5),  "Yen carry unwind −3.0%"),
+    (datetime.date(2025, 4,  3),  "Liberation Day −4.8%"),
+    (datetime.date(2025, 4,  4),  "Tariff panic −6.0%"),
+    (datetime.date(2025, 4,  9),  "Tariff pause +9.5%"),
+]
+
+def _pill(d: datetime.date) -> str:
+    return (
+        f'<input type="text" readonly value="{d.strftime("%m/%d/%Y")}" '
+        f'onclick="this.select()" '
+        f'style="display:block;font-size:12px;color:#444;background:#F1F2F6;'
+        f'border:none;outline:none;padding:3px 10px;border-radius:6px;'
+        f'margin-bottom:4px;width:94px;cursor:default;font-family:inherit;">'
+    )
+
+_PCT_RE = re.compile(r'([+\-−]\d+\.?\d*%)\s*$')
+
+def _split_label(lbl: str) -> tuple[str, str, str]:
+    """Split label into (title, pct_text, pct_color). pct_text is '' if absent."""
+    m = _PCT_RE.search(lbl)
+    if not m:
+        return lbl.strip(), "", ""
+    title = lbl[:m.start()].strip()
+    pct   = m.group(1)
+    color = "#11F185" if pct.startswith("+") else "#FF3D54"
+    return title, pct, color
+
+def _notable_item(d: datetime.date, lbl: str) -> str:
+    title, pct, color = _split_label(lbl)
+    pct_html = (
+        f'<span style="font-size:12px;color:{color};display:block;margin-bottom:6px;">{pct}</span>'
+        if pct else ""
+    )
+    return (
+        f'<div style="margin-bottom:22px;">'
+        f'<span style="font-size:12px;color:#444;display:block;margin-bottom:0px;">{title}</span>'
+        f'{pct_html}'
+        f'{_pill(d)}'
+        f'</div>'
+    )
+
+with st.container(border=True):
+    _kd_events = get_financial_events(_EVENT_IMPACT_START, datetime.date.today())
+
+    # Group by normalised event type, preserving insertion order.
+    _kd_grouped: dict[str, list[datetime.date]] = {}
+    for _d, _lbl in _kd_events:
+        _key = "OPEX" if "OPEX" in _lbl else _lbl
+        _kd_grouped.setdefault(_key, []).append(_d)
+
+    _kd_labels = {
+        "OPEX": "OPEX (3rd Friday)",
+        "VIX Exp": "VIX Expiration",
+        "FOMC": "FOMC Day",
+        "Thanksgiving": "Thanksgiving",
+        "Xmas": "Christmas",
+        "NYE": "New Year's Eve",
+    }
+
+    # --- OPEX / VIX Exp / FOMC in year columns ---
+    main_html = ""
+    for _key in ["OPEX", "VIX Exp", "FOMC"]:
+        dates_for_key = sorted(_kd_grouped.get(_key, []), reverse=True)
+        if not dates_for_key:
+            continue
+        by_year: dict[int, list[datetime.date]] = {}
+        for d in dates_for_key:
+            by_year.setdefault(d.year, []).append(d)
+        year_cols = "".join(
+            f'<div style="min-width:106px;">'
+            + "".join(_pill(d) for d in sorted(by_year[yr]))
+            + f'</div>'
+            for yr in sorted(by_year.keys(), reverse=True)
+        )
+        main_html += (
+            f'<div style="margin-bottom:24px;">'
+            f'<p style="font-size:12px;font-weight:600;color:#1A1A1A;margin:0 0 10px 0;">'
+            f'{_kd_labels[_key]}</p>'
+            f'<div style="display:flex;flex-wrap:wrap;gap:16px;">{year_cols}</div>'
+            f'</div>'
+        )
+
+    # --- Thanksgiving / Christmas / NYE as three side-by-side columns in one row ---
+    holiday_cols = ""
+    for _key in ["Thanksgiving", "Xmas", "NYE"]:
+        dates_for_key = sorted(_kd_grouped.get(_key, []), reverse=True)
+        if not dates_for_key:
+            continue
+        pills = "".join(_pill(d) for d in dates_for_key)
+        holiday_cols += (
+            f'<div style="min-width:106px;">'
+            f'<p style="font-size:12px;font-weight:600;color:#1A1A1A;margin:0 0 10px 0;">'
+            f'{_kd_labels[_key]}</p>'
+            f'{pills}'
+            f'</div>'
+        )
+    main_html += (
+        f'<div style="margin-bottom:24px;">'
+        f'<div style="display:flex;flex-wrap:wrap;gap:16px;">{holiday_cols}</div>'
+        f'</div>'
+    )
+
+    st.markdown(
+        f'<div style="padding:16px 0 4px 16px;width:fit-content;">{main_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+# =========================
+# 6. NOTABLE EVENTS
+# =========================
+st.write("")
+st.markdown('<div class="section-label">Notable events ±3%</div>', unsafe_allow_html=True)
+
+with st.container(border=True):
+    _notable_by_year: dict[int, list[tuple[datetime.date, str]]] = {}
+    for _d, _label in _NOTABLE_EVENTS:
+        _notable_by_year.setdefault(_d.year, []).append((_d, _label))
+
+    notable_year_cols = "".join(
+        f'<div style="min-width:140px;">'
+        + "".join(
+            _notable_item(_d, _lbl)
+            for _d, _lbl in sorted(_notable_by_year[yr])
+        )
+        + f'</div>'
+        for yr in sorted(_notable_by_year.keys(), reverse=True)
+    )
+    st.markdown(
+        f'<div style="padding:16px 0 4px 16px;width:fit-content;">'
+        f'<div style="display:flex;flex-wrap:wrap;gap:16px;">{notable_year_cols}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+# =========================
+# 7. ±1.5% INTRADAY MOVES
+# =========================
+st.write("")
+st.markdown('<div class="section-label">Intraday moves ±1.5%</div>', unsafe_allow_html=True)
+
+with st.container(border=True):
+    _big_moves_df = _get_event_daily_df()
+
+    if _big_moves_df.empty:
+        st.caption("No daily data available.")
+    else:
+        # Compute close-to-prev-close % change, filter to ≥2% moves in 2025–2026.
+        _bm = _big_moves_df[["Close"]].copy()
+        _bm["chg"] = _bm["Close"].pct_change() * 100
+        _bm["date"] = _bm.index.date
+        _bm["year"] = _bm.index.year
+
+        _bm_filtered = _bm[
+            (_bm["year"] >= 2019) &
+            (_bm["chg"].abs() >= 1.5)
+        ].copy()
+
+        if _bm_filtered.empty:
+            st.caption("No ±1.5% days found.")
+        else:
+            def _bm_item(d: datetime.date, chg: float) -> str:
+                sign  = "+" if chg >= 0 else ""
+                label = f"{sign}{chg:.1f}%"
+                color = "#11F185" if chg >= 0 else "#FF3D54"
+                return (
+                    f'<div style="margin-bottom:22px;">'
+                    f'<span style="font-size:12px;color:{color};display:block;margin-bottom:6px;">{label}</span>'
+                    f'{_pill(d)}'
+                    f'</div>'
+                )
+
+            _bm_by_year: dict[int, list[tuple[datetime.date, float]]] = {}
+            for _, row in _bm_filtered.iterrows():
+                _bm_by_year.setdefault(int(row["year"]), []).append((row["date"], row["chg"]))
+
+            bm_year_cols = "".join(
+                f'<div style="min-width:130px;">'
+                f'<p style="font-size:12px;font-weight:600;color:#1A1A1A;margin:0 0 10px 0;">{yr}</p>'
+                + "".join(
+                    _bm_item(d, chg)
+                    for d, chg in sorted(_bm_by_year[yr])
+                )
+                + f'</div>'
+                for yr in sorted(_bm_by_year.keys(), reverse=True)
+            )
+
+            st.markdown(
+                f'<div style="padding:16px 0 4px 16px;width:fit-content;">'
+                f'<div style="display:flex;flex-wrap:wrap;gap:24px;">{bm_year_cols}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )

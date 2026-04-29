@@ -57,12 +57,20 @@ def render_header(current_page: str = None):
         status_str = ""
 
     def _nav_link(label, path, active):
-        weight = "600" if active else "400"
         color = "#1A1A1A" if active else "#888"
+        dot = (
+            '<div style="width:4px;height:4px;border-radius:50%;background:#1A1A1A;'
+            'margin:3px auto 0 auto;"></div>'
+            if active else
+            '<div style="width:4px;height:4px;margin:3px auto 0 auto;"></div>'
+        )
         return (
-            f'<a href="/{path}" target="_self" style="text-decoration: none; '
-            f'font-size: 14px; font-weight: {weight}; color: {color}; cursor: pointer;">'
-            f'{label}</a>'
+            f'<a href="/{path}" target="_self" style="text-decoration:none;cursor:pointer;">'
+            f'<div style="display:flex;flex-direction:column;align-items:center;">'
+            f'<span style="font-size:14px;font-weight:400;color:{color};">{label}</span>'
+            f'{dot}'
+            f'</div>'
+            f'</a>'
         )
 
     nav_html = ""
@@ -70,14 +78,13 @@ def render_header(current_page: str = None):
         trade_link = _nav_link("Trade", "",      current_page == "trading")
         study_link = _nav_link("Study", "study", current_page == "study")
         nav_html = (
-            f'<div style="display: flex; gap: 1.5rem; align-items: center; '
-            f'background: white; border-radius: 12px; padding: 5px 16px;">'
+            f'<div style="display: flex; gap: 1.5rem; align-items: center;">'
             f'{trade_link}{study_link}'
             f'</div>'
         )
 
     header_html = f"""
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
             <div style="font-size: 16px; font-weight: 400;">
                 <span style="color: black;"><b>{date_str.split(' ')[0]}</b> {' '.join(date_str.split(' ')[1:])}</span>
                 <span style="color: #B71AFF; margin-left: 15px; font-weight: 400;">{time_str}</span>
