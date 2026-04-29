@@ -1,15 +1,23 @@
 /* Import Inter */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-/* Force Inter and REDUCE global base size */
-/* Force Inter on literally every HTML element */
+/* Force Inter on every element */
 * {
     font-family: 'Inter', sans-serif !important;
 }
 
+/* Restore Material Symbols font for Streamlit's icon glyph spans.
+   Class selectors (0,1,0) beat the universal selector (0,0,0) even with
+   !important, so these rules win and icon ligatures render correctly. */
+.material-symbols-rounded,
+.material-symbols-outlined,
+.material-symbols-sharp {
+    font-family: 'Material Symbols Rounded', 'Material Symbols Outlined',
+                 'Material Symbols Sharp', 'Material Icons' !important;
+}
+
 html, body, [class*="css"], [class*="st-"] {
-    font-family: 'Inter', sans-serif !important;
-    font-size: 12px !important; 
+    font-size: 12px !important;
 }
 
 /* --- GLOBAL BASE SIZE --- */
@@ -215,4 +223,19 @@ div[data-testid="stCheckbox"] {
     justify-content: flex-end;
     align-items: center;
     padding-top: 0.4rem;
+}
+
+/* --- BESPOKE NAV: hide Streamlit's sidebar, collapsed toggle, and toolbar --- */
+[data-testid="stSidebar"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"],
+header[data-testid="stHeader"] {
+    display: none !important;
+}
+
+/* Remove any additional top padding on the main content block */
+[data-testid="stAppViewBlockContainer"] {
+    padding-top: 0 !important;
+    padding-left: 2rem !important;
+    padding-right: 2rem !important;
 }
