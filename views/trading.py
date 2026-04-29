@@ -391,12 +391,12 @@ with col_right:
         day_params = {"1 Day": "1d", "3 Days": "3d", "5 Days": "5d"}
 
         with st.container(border=True):
-            selected_option = st.radio(
+            selected_option = st.pills(
                 "Intraday Timeframe",
                 list(day_params.keys()),
-                horizontal=True,
+                default="1 Day",
                 key="day_radio",
-                label_visibility="collapsed"
+                label_visibility="collapsed",
             )
 
             df_day = get_spx_history_intraday(period=day_params[selected_option])
@@ -426,13 +426,12 @@ with col_right:
         with st.container(border=True):
             radio_col, ev_col, line_col = st.columns([3, 0.5, 0.5])
             with radio_col:
-                selected_option = st.radio(
+                selected_option = st.pills(
                     "Historical Timeframe",
                     list(month_params.keys()),
-                    index=2,
-                    horizontal=True,
+                    default="6 Months",
                     key="month_radio",
-                    label_visibility="collapsed"
+                    label_visibility="collapsed",
                 )
             with ev_col:
                 show_events = st.checkbox("Events", key="show_events")

@@ -21,10 +21,10 @@ This is an SPX (S&P 500 index) dashboard. Key data available:
 
 - **Daily OHLC candles** for $SPX via Schwab API, going back to ~2019
 - **5-minute intraday candles** (FirstRateData CSV, ES futures CSV, or Schwab API fallback)
-- **±1.5% intraday move tracker** — every day since 2019 where the close moved ≥1.5% vs the prior close
+- **±1.5% intraday move tracker** — every day since 2019 where SPX moved ≥1.5% from the **opening price to the closing price** (open-to-close)
 - **Notable events** — hand-curated major SPX single-day moves (e.g., COVID crash, Liberation Day tariff panic)
 - **Key calendar dates** — OPEX (monthly options expiration), VIX expiration, FOMC days, holidays
-- **"Intraday move" definition here** = close-to-prior-close % change (not open-to-close or high-to-low range)
+- **"Intraday move" definition** = **open-to-close % change** — from the first print of the day to the last. This is the only metric relevant to 0DTE trading, since every position opens and closes within the same session. Close-to-prior-close includes the overnight gap, which has no bearing on a same-day trade and should never be used as the primary move metric.
 
 ## SpotGamma — what it is and how it fits the workflow
 

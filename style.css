@@ -225,6 +225,41 @@ div[data-testid="stCheckbox"] {
     padding-top: 0.4rem;
 }
 
+/* --- EQUAL-HEIGHT COLUMNS: stretch bordered containers to the tallest sibling --- */
+/* Confirmed by runtime DOM inspection: stVerticalBlockBorderWrapper doesn't exist in this
+   Streamlit version. The actual border container is stLayoutWrapper (flex: 0 1 auto by default). */
+[data-testid="stHorizontalBlock"] {
+    align-items: stretch !important;
+}
+[data-testid="stColumn"] {
+    display: flex !important;
+    flex-direction: column !important;
+}
+[data-testid="stColumn"] > div {
+    flex: 1 !important;
+    display: flex !important;
+    flex-direction: column !important;
+}
+/* stLayoutWrapper is the actual bordered container — give it flex:1 so it fills the column */
+[data-testid="stColumn"] [data-testid="stLayoutWrapper"] {
+    flex: 1 !important;
+}
+
+/* --- PILLS: selected state → black outline + black text, no red --- */
+div[data-testid="stPills"] button[aria-pressed="true"],
+div[data-testid="stPills"] button[data-selected="true"] {
+    border-color: #1A1A1A !important;
+    color: #1A1A1A !important;
+    background-color: transparent !important;
+}
+
+div[data-testid="stPills"] button[aria-pressed="true"]:hover,
+div[data-testid="stPills"] button[data-selected="true"]:hover {
+    border-color: #1A1A1A !important;
+    color: #1A1A1A !important;
+    background-color: transparent !important;
+}
+
 /* --- BESPOKE NAV: hide Streamlit's sidebar, collapsed toggle, and toolbar --- */
 [data-testid="stSidebar"],
 [data-testid="stSidebarCollapsedControl"],
@@ -238,4 +273,41 @@ header[data-testid="stHeader"] {
     padding-top: 0 !important;
     padding-left: 2rem !important;
     padding-right: 2rem !important;
+}
+
+/* --- INTRADAY NOTES: hover tooltip on date items --- */
+.bm-note-wrap {
+    position: relative;
+    display: inline-block;
+}
+.bm-note-dot {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #AAAAAA;
+    cursor: default;
+    vertical-align: middle;
+    margin-left: 6px;
+    margin-bottom: 2px;
+}
+.bm-note-tip {
+    display: none;
+    position: absolute;
+    left: 14px;
+    top: -2px;
+    background: #1A1A1A;
+    color: #EEEEEE;
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 7px 11px;
+    border-radius: 6px;
+    z-index: 1000;
+    min-width: 180px;
+    max-width: 260px;
+    pointer-events: none;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+}
+.bm-note-wrap:hover .bm-note-tip {
+    display: block;
 }
