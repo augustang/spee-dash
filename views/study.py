@@ -32,119 +32,159 @@ MINUTE_HISTORY_DAYS = 240
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 
-# FirstRateData (SPX index, full exchange data — purchase at firstratedata.com).
-# Earliest date once the full file is present: 2008-01-02.
-_FRD_MIN_DATE = datetime.date(2008, 1, 2)
-_FRD_5MIN_PATHS = [
-    os.path.join(_DATA_DIR, "SPX_5min.csv"),         # full purchase file
-    os.path.join(_DATA_DIR, "SPX_5min_sample.csv"),  # free 2-week sample
-]
-
-# ES futures CSV from Kaggle (ES E-mini, tracks SPX closely, Aug 2019 – Aug 2024).
-_ES_MIN_DATE = datetime.date(2019, 8, 11)
-_ES_5MIN_PATH = os.path.join(_DATA_DIR, "ES_5Years_8_11_2024.csv")
+# FirstRateData (SPX index — firstratedata.com, full purchase).
+# 5-min coverage: 2008-01-02 → present (Schwab auto-archive fills forward).
+# Daily coverage: 2000-11-27 → present.
+_FRD_MIN_DATE  = datetime.date(2008, 1, 2)
+_FRD_5MIN_PATH = os.path.join(_DATA_DIR, "SPX_5min.csv")
+_FRD_1DAY_PATH = os.path.join(_DATA_DIR, "SPX_1day.csv")
 
 
 @st.cache_data(ttl=None, show_spinner=False)
 def _load_frd_5min() -> pd.DataFrame:
-    """Load the FirstRateData 5-min CSV (whichever file exists). Cached for the session."""
-    for path in _FRD_5MIN_PATHS:
-        if os.path.exists(path):
-            df = pd.read_csv(path, parse_dates=["timestamp"])
-            df.set_index("timestamp", inplace=True)
-            df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
-            df.index = df.index.tz_localize(None)
-            return df
-    return pd.DataFrame()
-
-
-@st.cache_resource
-def _load_es_5min() -> pd.DataFrame:
-    """Load the ES futures 5-min CSV filtered to regular trading hours (09:30–16:00 ET).
-    Uses cache_resource (not cache_data) to avoid pickle overhead on the ~17MB CSV."""
-    if not os.path.exists(_ES_5MIN_PATH):
+    """Load the FirstRateData 5-min CSV (SPX_5min.csv). Cached for the session."""
+    if not os.path.exists(_FRD_5MIN_PATH):
         return pd.DataFrame()
-    df = pd.read_csv(_ES_5MIN_PATH, parse_dates=["Time"])
-    df.set_index("Time", inplace=True)
+    df = pd.read_csv(_FRD_5MIN_PATH, parse_dates=["timestamp"])
+    df.set_index("timestamp", inplace=True)
+    df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
     df.index = df.index.tz_localize(None)
-    df = df.between_time("09:30", "16:00")[["Open", "High", "Low", "Close"]]
     return df
 
 
-# --- LONG-TERM DAILY FETCHER ---
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_spx_daily(years: int) -> pd.DataFrame:
-    """Fetch daily SPX candles for the last `years` years (e.g. 1, 2, 5, 10, 20)."""
-    now_ms = int(time.time() * 1000)
-    start_ms = now_ms - 86400 * 1000 * 365 * years
+@st.cache_data(ttl=None, show_spinner=False)
+def _load_frd_daily() -> pd.DataFrame:
+    """Load the FirstRateData daily CSV (SPX_1day.csv). Cached for the session."""
+    if not os.path.exists(_FRD_1DAY_PATH):
+        return pd.DataFrame()
+    df = pd.read_csv(_FRD_1DAY_PATH, parse_dates=["date"])
+    df.set_index("date", inplace=True)
+    df.index = df.index.normalize()
+    df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
+    return df[["Open", "High", "Low", "Close"]].sort_index()
 
+
+def _append_to_archive(df: pd.DataFrame) -> None:
+    """Append freshly-fetched Schwab bars to SPX_5min.csv so they survive the 9-month window.
+
+    Columns expected: Open, High, Low, Close (index = datetime, tz-naive ET).
+    Writes lowercase column names (open/high/low/close) to match the CSV format
+    that _load_frd_5min() expects. No-op if df is empty.
+    """
+    if df.empty:
+        return
+
+    archive_path = _FRD_5MIN_PATH
+
+    # Rename to lowercase for the CSV format
+    df_out = df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close"})
+    df_out.index.name = "timestamp"
+
+    if os.path.exists(archive_path):
+        existing = pd.read_csv(archive_path, parse_dates=["timestamp"])
+        existing.set_index("timestamp", inplace=True)
+        existing.index = existing.index.tz_localize(None)
+        combined = pd.concat([existing, df_out])
+        combined = combined[~combined.index.duplicated(keep="first")]
+        combined.sort_index(inplace=True)
+        combined.to_csv(archive_path)
+    else:
+        df_out.to_csv(archive_path)
+
+
+# --- LONG-TERM DAILY FETCHER ---
+_FRD_DAILY_START = datetime.date(2000, 11, 27)  # earliest date in SPX_1day.csv
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_spx_daily(years: int | None) -> pd.DataFrame:
+    """Fetch daily SPX candles.
+    Pass years=None for the full FRD history (back to Nov 2000).
+    Priority: 1) Schwab API  2) FRD daily CSV"""
+    now_ms = int(time.time() * 1000)
+    if years is None:
+        start_ms = int(datetime.datetime(_FRD_DAILY_START.year, _FRD_DAILY_START.month, _FRD_DAILY_START.day).timestamp() * 1000)
+    else:
+        start_ms = now_ms - 86400 * 1000 * 365 * years
+
+    # 1. Schwab API
     raw = schwab_client.fetch_price_history(
         symbol="$SPX", period_type="year", freq_type="daily", freq=1,
         start_date=start_ms, end_date=now_ms,
     )
     if raw and 'candles' in raw:
         df = pd.DataFrame(raw['candles'])
-        if df.empty:
+        if not df.empty:
+            df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+            df['datetime'] = (
+                df['datetime']
+                .dt.tz_localize('UTC')
+                .dt.tz_convert('America/New_York')
+                .dt.tz_localize(None)
+                .dt.normalize()
+            )
+            df.set_index('datetime', inplace=True)
+            df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
             return df
-        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-        df['datetime'] = (
-            df['datetime']
-            .dt.tz_localize('UTC')
-            .dt.tz_convert('America/New_York')
-            .dt.tz_localize(None)
-            .dt.normalize()
-        )
-        df.set_index('datetime', inplace=True)
-        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
-        return df
+
+    # 2. FRD daily CSV (fallback if Schwab is unavailable)
+    frd = _load_frd_daily()
+    if not frd.empty:
+        if years is None:
+            return frd[frd.index >= pd.Timestamp(_FRD_DAILY_START)]
+        cutoff = pd.Timestamp.now() - pd.DateOffset(years=years)
+        return frd[frd.index >= cutoff]
+
     return pd.DataFrame()
 
 
-# Fixed Jan-2019-to-today daily dataset used exclusively for event impact stats.
-_EVENT_IMPACT_START = datetime.date(2019, 1, 1)
+# Rolling 15-year window for event impact stats (uses FRD daily which starts Nov 2000).
+_EVENT_IMPACT_YEARS = 15
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _get_event_daily_df() -> pd.DataFrame:
-    """Daily SPX closes from Jan 2019 to today — fixed window for event impact stats."""
+    """Daily SPX OHLC for the last 15 years.
+    Priority: 1) Schwab API  2) FRD daily CSV"""
     now_ms   = int(time.time() * 1000)
-    start_ms = int(datetime.datetime(_EVENT_IMPACT_START.year, 1, 1).timestamp() * 1000)
+    start_ms = now_ms - 86400 * 1000 * 365 * _EVENT_IMPACT_YEARS
+
+    # 1. Schwab API (most accurate — live, rolling full history)
     raw = schwab_client.fetch_price_history(
         symbol="$SPX", period_type="year", freq_type="daily", freq=1,
         start_date=start_ms, end_date=now_ms,
     )
     if raw and 'candles' in raw:
         df = pd.DataFrame(raw['candles'])
-        if df.empty:
+        if not df.empty:
+            df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+            df['datetime'] = (
+                df['datetime']
+                .dt.tz_localize('UTC')
+                .dt.tz_convert('America/New_York')
+                .dt.tz_localize(None)
+                .dt.normalize()
+            )
+            df.set_index('datetime', inplace=True)
+            df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
             return df
-        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-        df['datetime'] = (
-            df['datetime']
-            .dt.tz_localize('UTC')
-            .dt.tz_convert('America/New_York')
-            .dt.tz_localize(None)
-            .dt.normalize()
-        )
-        df.set_index('datetime', inplace=True)
-        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
-        return df
+
+    # 2. FRD daily CSV (exact SPX index, full history)
+    frd = _load_frd_daily()
+    if not frd.empty:
+        cutoff = pd.Timestamp.now() - pd.DateOffset(years=_EVENT_IMPACT_YEARS)
+        return frd[frd.index >= cutoff]
+
     return pd.DataFrame()
 @st.cache_data(ttl=None, show_spinner="Loading 5-minute candles…")
 def get_spx_5min_for_date(d: datetime.date) -> pd.DataFrame:
-    # 1. Try the FirstRateData CSV first (SPX index, most accurate).
+    # 1. SPX_5min.csv — exact SPX index (TwelveData or FirstRateData full purchase).
+    #    Covers whatever date range was fetched; takes priority over approximations.
     frd = _load_frd_5min()
     if not frd.empty:
         day_df = frd[frd.index.date == d]
         if not day_df.empty:
             return day_df[["Open", "High", "Low", "Close"]]
 
-    # 2. Try the ES futures CSV (tracks SPX closely; covers Aug 2019 – Aug 2024).
-    es = _load_es_5min()
-    if not es.empty:
-        day_df = es[es.index.date == d]
-        if not day_df.empty:
-            return day_df
-
-    # 3. Fall back to the Schwab API (rolling ~9-month window for recent dates).
+    # 2. Schwab API (rolling ~9-month window for recent dates).
     start_dt = datetime.datetime.combine(d, datetime.time(0, 0))
     end_dt = datetime.datetime.combine(d, datetime.time(23, 59, 59))
     start_ms = int(start_dt.timestamp() * 1000)
@@ -156,21 +196,21 @@ def get_spx_5min_for_date(d: datetime.date) -> pd.DataFrame:
     )
     if raw and 'candles' in raw:
         df = pd.DataFrame(raw['candles'])
-        if df.empty:
-            return df
-        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-        df['datetime'] = (
-            df['datetime']
-            .dt.tz_localize('UTC')
-            .dt.tz_convert('America/New_York')
-            .dt.tz_localize(None)
-        )
-        df = df[df['datetime'].dt.date == d]
-        if df.empty:
-            return df
-        df.set_index('datetime', inplace=True)
-        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
-        return df
+        if not df.empty:
+            df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+            df['datetime'] = (
+                df['datetime']
+                .dt.tz_localize('UTC')
+                .dt.tz_convert('America/New_York')
+                .dt.tz_localize(None)
+            )
+            df = df[df['datetime'].dt.date == d]
+            if not df.empty:
+                df.set_index('datetime', inplace=True)
+                df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
+                _append_to_archive(df)  # persist before Schwab's 9-month window moves on
+                return df
+
     return pd.DataFrame()
 
 
@@ -179,7 +219,7 @@ def get_spx_5min_for_date(d: datetime.date) -> pd.DataFrame:
 # =========================
 st.markdown('<div class="section-label">Long-term chart</div>', unsafe_allow_html=True)
 with st.container(border=True):
-    range_params = {"1Y": 1, "2Y": 2, "5Y": 5, "10Y": 10, "Max": 20}
+    range_params = {"1Y": 1, "2Y": 2, "5Y": 5, "10Y": 10, "Max": None}
 
     radio_col, ev_col, line_col = st.columns([3, 0.5, 0.5])
     with radio_col:
@@ -237,14 +277,8 @@ st.write("")
 st.markdown('<div class="section-label">Intraday explorer</div>', unsafe_allow_html=True)
 
 today = datetime.date.today()
-frd_loaded = os.path.exists(os.path.join(_DATA_DIR, "SPX_5min.csv"))
-es_loaded  = not _load_es_5min().empty
-if frd_loaded:
-    min_date = _FRD_MIN_DATE
-elif es_loaded:
-    min_date = _ES_MIN_DATE
-else:
-    min_date = today - datetime.timedelta(days=MINUTE_HISTORY_DAYS)
+frd_loaded = os.path.exists(_FRD_5MIN_PATH)
+min_date = _FRD_MIN_DATE if frd_loaded else today - datetime.timedelta(days=MINUTE_HISTORY_DAYS)
 
 col_stats, col_chart = st.columns([1.3, 2.7], gap="medium")
 
@@ -305,15 +339,13 @@ with col_stats:
                     if len(prior_days) > 0:
                         prior_close = float(df_long.loc[prior_days[-1], 'Close'])
 
-                # 2. Fall back to the 5-min CSV sources (already cached in memory).
+                # 2. Fall back to the FRD 5-min CSV (already cached in memory).
                 if prior_close is None:
-                    for _loader in (_load_frd_5min, _load_es_5min):
-                        _src = _loader()
-                        if not _src.empty:
-                            _prior_bars = _src[_src.index.date < selected_date]
-                            if not _prior_bars.empty:
-                                prior_close = float(_prior_bars['Close'].iloc[-1])
-                                break
+                    _src = _load_frd_5min()
+                    if not _src.empty:
+                        _prior_bars = _src[_src.index.date < selected_date]
+                        if not _prior_bars.empty:
+                            prior_close = float(_prior_bars['Close'].iloc[-1])
 
                 if prior_close is not None:
                     gap_pts = day_open - prior_close
@@ -435,17 +467,10 @@ _COMPARE_LABELS = ["Date A", "Date B", "Date C", "Date D", "Date E"]
 
 with st.container(border=True):
     today = datetime.date.today()
-    frd_loaded = os.path.exists(os.path.join(_DATA_DIR, "SPX_5min.csv"))
-    es_loaded  = not _load_es_5min().empty
-    if frd_loaded:
-        min_date = _FRD_MIN_DATE
-    elif es_loaded:
-        min_date = _ES_MIN_DATE
-    else:
-        min_date = today - datetime.timedelta(days=MINUTE_HISTORY_DAYS)
+    frd_loaded = os.path.exists(_FRD_5MIN_PATH)
+    min_date = _FRD_MIN_DATE if frd_loaded else today - datetime.timedelta(days=MINUTE_HISTORY_DAYS)
 
-    _ES_END_DATE   = datetime.date(2024, 8, 9)
-    _SCHWAB_START  = today - datetime.timedelta(days=MINUTE_HISTORY_DAYS)
+    _SCHWAB_START = today - datetime.timedelta(days=MINUTE_HISTORY_DAYS)
 
     def _source_label(d: datetime.date) -> tuple[str, str]:
         """Return (label, color) for the data source expected for a given date."""
@@ -455,8 +480,6 @@ with st.container(border=True):
             return "SPX · FirstRateData", "#444"
         if d >= _SCHWAB_START:
             return "SPX · Schwab API", "#444"
-        if _ES_MIN_DATE <= d <= _ES_END_DATE:
-            return "ES Futures · CSV", "#444"
         return "No data available", "#FF3D54"
 
     def _recent_dates(event_type: str, n: int = 5) -> list[datetime.date]:
@@ -536,14 +559,6 @@ with st.container(border=True):
                 label_visibility="collapsed",
             )
             _compare_dates.append(_d)
-            _src, _src_color = _source_label(_d if isinstance(_d, datetime.date) else None)
-            if _src:
-                st.markdown(
-                    f'<div style="margin-top:-12px;">'
-                    f'<span style="font-size:11px;color:{"#FF3D54" if _src_color == "#FF3D54" else "#888"};">{_src}</span>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
 
     _compare_dfs = [
         get_spx_5min_for_date(d) if isinstance(d, datetime.date) else pd.DataFrame()
@@ -651,13 +666,15 @@ with st.container(border=True):
 # 4. EVENT IMPACT TABLE
 # =========================
 def _compute_event_impact(daily_df: pd.DataFrame, events: list) -> pd.DataFrame:
-    """For each event type, compute count + average/median return on event day,
-    prior trading day, and next trading day."""
+    """For each event type, compute count + average open-to-close and open-to-low
+    on the prior trading day, event day, and next trading day."""
     if daily_df.empty or not events:
         return pd.DataFrame()
 
-    closes = daily_df['Close']
-    pct_change = closes.pct_change() * 100
+    # Open-to-close % for every trading day
+    oc = (daily_df['Close'] - daily_df['Open']) / daily_df['Open'] * 100
+    # Open-to-low % for every trading day (always ≤ 0)
+    ol = (daily_df['Low'] - daily_df['Open']) / daily_df['Open'] * 100
     trading_days = daily_df.index
 
     # Normalise labels: collapse "Jan OPEX", "Feb OPEX", etc. → "OPEX"
@@ -675,15 +692,17 @@ def _compute_event_impact(daily_df: pd.DataFrame, events: list) -> pd.DataFrame:
         evt_day = future[0]
         evt_loc = trading_days.get_loc(evt_day)
 
-        prior_ret = pct_change.iloc[evt_loc - 1] if evt_loc - 1 >= 0 else np.nan
-        evt_ret = pct_change.iloc[evt_loc] if evt_loc < len(pct_change) else np.nan
-        next_ret = pct_change.iloc[evt_loc + 1] if evt_loc + 1 < len(pct_change) else np.nan
+        prior_oc  = oc.iloc[evt_loc - 1]     if evt_loc - 1 >= 0             else np.nan
+        evt_oc    = oc.iloc[evt_loc]          if evt_loc < len(oc)            else np.nan
+        evt_ol    = ol.iloc[evt_loc]          if evt_loc < len(ol)            else np.nan
+        next_oc   = oc.iloc[evt_loc + 1]     if evt_loc + 1 < len(oc)        else np.nan
 
         rows.append({
-            "type": _norm(label),
-            "prior": prior_ret,
-            "event": evt_ret,
-            "next": next_ret,
+            "type":     _norm(label),
+            "prior_oc": prior_oc,
+            "evt_oc":   evt_oc,
+            "evt_ol":   evt_ol,
+            "next_oc":  next_oc,
         })
 
     if not rows:
@@ -691,17 +710,17 @@ def _compute_event_impact(daily_df: pd.DataFrame, events: list) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     grouped = df.groupby("type").agg(
-        Count=("event", "count"),
-        Prior_Avg=("prior", "mean"),
-        Event_Avg=("event", "mean"),
-        Event_Med=("event", "median"),
-        Next_Avg=("next", "mean"),
+        Count=("evt_oc", "count"),
+        Prior_OC=("prior_oc", "mean"),
+        Evt_OC=("evt_oc", "mean"),
+        Evt_OL=("evt_ol", "mean"),
+        Next_OC=("next_oc", "mean"),
     ).reset_index().rename(columns={
-        "type": "Event",
-        "Prior_Avg": "Prior day avg %",
-        "Event_Avg": "Event day avg %",
-        "Event_Med": "Event day median %",
-        "Next_Avg": "Next day avg %",
+        "type":     "Event",
+        "Prior_OC": "Prior day O→C",
+        "Evt_OC":   "Event O→C",
+        "Evt_OL":   "Event O→L",
+        "Next_OC":  "Next day O→C",
     })
     return grouped.sort_values("Count", ascending=False).reset_index(drop=True)
 
@@ -714,7 +733,8 @@ with st.container(border=True):
         st.info("Daily data unavailable — can't compute event impact.")
     else:
         _today = datetime.date.today()
-        all_events = get_financial_events(_EVENT_IMPACT_START, _today)
+        _impact_start = _today.replace(year=_today.year - _EVENT_IMPACT_YEARS)
+        all_events = get_financial_events(_impact_start, _today)
         impact_df = _compute_event_impact(_event_daily, all_events)
         if impact_df.empty:
             st.info("No events found in range.")
@@ -725,14 +745,22 @@ with st.container(border=True):
                 color = "#11F185" if val >= 0 else "#FF3D54"
                 return f'color: {color}; font-weight: 600;'
 
-            ret_cols = ["Prior day avg %", "Event day avg %", "Event day median %", "Next day avg %"]
+            ret_cols = ["Prior day O→C", "Event O→C", "Event O→L", "Next day O→C"]
             styled = impact_df.style.format({c: "{:+.2f}%" for c in ret_cols}).applymap(
                 _color_returns, subset=ret_cols
             )
             st.dataframe(styled, hide_index=True, use_container_width=True)
-            st.caption(
-                f"Averaged from Jan {_EVENT_IMPACT_START.year} → today · "
-                f"{len(_event_daily):,} trading days · {len(all_events)} event occurrences"
+            st.markdown(
+                f'<p style="font-size:11px;color:#888;margin-top:6px;">'
+                f'Averaged open-to-close'
+                f'<span style="margin:0 20px;"></span>'
+                f'Last {_EVENT_IMPACT_YEARS} years'
+                f'<span style="margin:0 20px;"></span>'
+                f'{len(_event_daily):,} trading days'
+                f'<span style="margin:0 20px;"></span>'
+                f'{len(all_events)} event occurrences'
+                f'</p>',
+                unsafe_allow_html=True,
             )
 
 # =========================
@@ -814,7 +842,7 @@ def _notable_item(title: str, d: datetime.date, oc: float | None, ol: float | No
     )
 
 with st.container(border=True):
-    _kd_events = get_financial_events(_EVENT_IMPACT_START, datetime.date.today())
+    _kd_events = get_financial_events(datetime.date(2019, 1, 1), datetime.date.today())
 
     # Group by normalised event type, preserving insertion order.
     _kd_grouped: dict[str, list[datetime.date]] = {}
