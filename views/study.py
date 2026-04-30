@@ -746,7 +746,7 @@ with st.container(border=True):
                 return f'color: {color}; font-weight: 600;'
 
             ret_cols = ["Prior day O→C", "Event O→C", "Event O→L", "Next day O→C"]
-            styled = impact_df.style.format({c: "{:+.2f}%" for c in ret_cols}).applymap(
+            styled = impact_df.style.format({c: "{:+.2f}%" for c in ret_cols}).map(
                 _color_returns, subset=ret_cols
             )
             st.dataframe(styled, hide_index=True, use_container_width=True)
