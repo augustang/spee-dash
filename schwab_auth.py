@@ -2,9 +2,10 @@
 Schwab OAuth re-authorization script.
 
 Usage:
-    python3 schwab_auth.py          # auto-capture on port 443 (needs sudo)
-    sudo python3 schwab_auth.py     # same, explicit sudo
-    python3 schwab_auth.py --manual # skip local server, paste URL manually
+    python3 schwab_auth.py                   # auto-capture on port 443 (needs sudo)
+    sudo python3 schwab_auth.py              # same, explicit sudo
+    python3 schwab_auth.py --manual          # skip local server, paste URL manually
+    python3 schwab_auth.py --url "https://127.0.0.1/?code=..."  # pass URL directly
 
 What it does:
     1. Opens your browser to the Schwab login page.
@@ -158,6 +159,13 @@ def _exchange_code_for_tokens(code: str, app_key: str, app_secret: str, callback
 def main():
     manual_mode = "--manual" in sys.argv
 
+    # --url "https://..." lets you pass the redirect URL directly as an arg
+    direct_url = None
+    if "--url" in sys.argv:
+        idx = sys.argv.index("--url")
+        if idx + 1 < len(sys.argv):
+            direct_url = sys.argv[idx + 1]
+
     app_key, app_secret, callback_url = _read_secrets()
 
     parsed_cb = urllib.parse.urlparse(callback_url)
@@ -169,34 +177,38 @@ def main():
         f"?client_id={app_key}&redirect_uri={callback_url}"
     )
 
-    # --- Step 1: Open browser ---
-    print("\n=== STEP 1: OPENING BROWSER FOR SCHWAB LOGIN ===")
-    print(f"If the browser doesn't open, visit:\n{auth_url}\n")
-    webbrowser.open(auth_url)
+    # --- Step 1: Open browser (skip if URL already provided) ---
+    if direct_url:
+        print(f"\n=== STEP 1: USING PROVIDED REDIRECT URL ===")
+        redirected_url = direct_url
+    else:
+        print("\n=== STEP 1: OPENING BROWSER FOR SCHWAB LOGIN ===")
+        print(f"If the browser doesn't open, visit:\n{auth_url}\n")
+        webbrowser.open(auth_url)
 
-    # --- Step 2: Capture callback ---
-    redirected_url = None
+        # --- Step 2: Capture callback ---
+        redirected_url = None
 
-    if not manual_mode:
-        print(f"⏳ Waiting for OAuth callback on https://{cb_host}:{cb_port} ...")
-        print("   (Log in and approve access in your browser)\n")
-        redirected_url = _try_auto_capture(cb_host, cb_port)
+        if not manual_mode:
+            print(f"⏳ Waiting for OAuth callback on https://{cb_host}:{cb_port} ...")
+            print("   (Log in and approve access in your browser)\n")
+            redirected_url = _try_auto_capture(cb_host, cb_port)
 
-        if redirected_url is None:
-            print(
-                "⚠️  Could not start local HTTPS server "
-                f"(port {cb_port} requires sudo)."
-            )
-            print(
-                "   Tip: run 'sudo python3 schwab_auth.py' for full automation,\n"
-                "   or use '--manual' to paste the URL yourself.\n"
-            )
-            manual_mode = True
+            if redirected_url is None:
+                print(
+                    "⚠️  Could not start local HTTPS server "
+                    f"(port {cb_port} requires sudo)."
+                )
+                print(
+                    "   Tip: run 'sudo python3 schwab_auth.py' for full automation,\n"
+                    "   or use '--manual' to paste the URL yourself.\n"
+                )
+                manual_mode = True
 
-    if manual_mode:
-        print("After login, your browser will show 'This site can't be reached'.")
-        print("Copy the ENTIRE URL from the address bar and paste it below.\n")
-        redirected_url = input("Paste redirect URL here > ")
+        if manual_mode:
+            print("After login, your browser will show 'This site can't be reached'.")
+            print("Copy the ENTIRE URL from the address bar and paste it below.\n")
+            redirected_url = input("Paste redirect URL here > ")
 
     if not redirected_url:
         print("❌ No callback received. Exiting.")
