@@ -234,6 +234,8 @@ div[data-testid="stCheckbox"] {
 [data-testid="stColumn"] {
     display: flex !important;
     flex-direction: column !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
 }
 [data-testid="stColumn"] > div {
     flex: 1 !important;

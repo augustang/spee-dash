@@ -1,5 +1,7 @@
 """Study page: long-term historical chart, lazy intraday explorer, day stats,
 event-impact analysis, and two-date comparison overlay."""
+from __future__ import annotations
+
 import datetime
 import json
 import os
@@ -212,6 +214,146 @@ def get_spx_5min_for_date(d: datetime.date) -> pd.DataFrame:
                 return df
 
     return pd.DataFrame()
+
+
+# ─── CONDITIONAL COMPARISON HELPERS ─────────────────────────────────────────
+
+_CC_SNAP_TIMES = [(10, 0), (10, 30), (11, 0), (11, 30), (12, 0), (13, 0), (14, 0), (15, 0)]
+_CC_TIME_OPTS  = [f"{h}:{m:02d}" for h, m in _CC_SNAP_TIMES]
+_CC_COND_TYPES = [
+    "% from open at time",
+    "Days from event",
+    "Day of week",
+    "Month",
+    "Overnight gap",
+]
+_CC_EVENT_OPTS = ["OPEX", "VIX Exp", "FOMC"]
+_CC_DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+_CC_MON_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+@st.cache_data(ttl=None, show_spinner="Building historical snapshot table…")
+def _build_daily_snapshots() -> pd.DataFrame:
+    """Precompute per-day metrics for the conditional comparison tool.
+
+    Returns a DataFrame indexed by date (datetime.date) with columns:
+      eod_pct, eod_low_pct, gap_pct,
+      pct_at_HHMM / range_at_HHMM  (one pair per _CC_SNAP_TIMES entry),
+      days_from_opex, days_from_vix_exp, days_from_fomc,
+      day_of_week (0=Mon), month (1–12).
+    """
+    frd5 = _load_frd_5min()
+    frd1 = _load_frd_daily()
+    if frd5.empty:
+        return pd.DataFrame()
+
+    df = frd5.copy()
+    df["_date"] = df.index.date
+    df["_time"] = df.index.time
+
+    grp_open  = df.groupby("_date")["Open"].first()
+    grp_close = df.groupby("_date")["Close"].last()
+    grp_low   = df.groupby("_date")["Low"].min()
+
+    snap = pd.DataFrame(index=grp_open.index)
+    snap.index.name = "date"
+    snap["eod_pct"]     = (grp_close / grp_open - 1) * 100
+    snap["eod_low_pct"] = (grp_low   / grp_open - 1) * 100
+
+    # Overnight gap: today's open vs yesterday's close (from daily OHLC)
+    if not frd1.empty:
+        ds    = frd1.sort_index()
+        gap_s = (ds["Open"] / ds["Close"].shift(1) - 1) * 100
+        gap_s.index = gap_s.index.date
+        snap["gap_pct"] = gap_s.reindex(snap.index)
+    else:
+        snap["gap_pct"] = np.nan
+
+    # Intraday % from open and high-low range at each snapshot time
+    for h, m in _CC_SNAP_TIMES:
+        k  = f"{h:02d}{m:02d}"
+        t  = datetime.time(h, m)
+        sb = df[df["_time"] <= t]
+        if sb.empty:
+            snap[f"pct_at_{k}"]   = np.nan
+            snap[f"range_at_{k}"] = np.nan
+            continue
+        sc = sb.groupby("_date")["Close"].last()
+        sh = sb.groupby("_date")["High"].max()
+        sl = sb.groupby("_date")["Low"].min()
+        snap[f"pct_at_{k}"]   = ((sc / grp_open - 1) * 100).reindex(snap.index)
+        snap[f"range_at_{k}"] = ((sh - sl) / grp_open * 100).reindex(snap.index)
+
+    # Event proximity: signed calendar days from nearest event
+    # negative = before event, positive = after event
+    all_ds = sorted(snap.index.tolist())
+    if all_ds:
+        ev_s     = min(all_ds) - datetime.timedelta(days=90)
+        ev_e     = max(all_ds) + datetime.timedelta(days=90)
+        all_ev   = get_financial_events(ev_s, ev_e)
+        opex_ds  = sorted(d for d, lbl in all_ev if "OPEX"    in lbl)
+        vix_ds   = sorted(d for d, lbl in all_ev if lbl == "VIX Exp")
+        fomc_ds  = sorted(d for d in FOMC_DATES   if ev_s <= d <= ev_e)
+
+        def _near(d: datetime.date, evts: list) -> float:
+            return float(min(((d - e).days for e in evts), key=abs)) if evts else np.nan
+
+        snap["days_from_opex"]    = [_near(d, opex_ds) for d in snap.index]
+        snap["days_from_vix_exp"] = [_near(d, vix_ds)  for d in snap.index]
+        snap["days_from_fomc"]    = [_near(d, fomc_ds) for d in snap.index]
+    else:
+        snap["days_from_opex"] = snap["days_from_vix_exp"] = snap["days_from_fomc"] = np.nan
+
+    snap["day_of_week"] = [d.weekday() for d in snap.index]
+    snap["month"]       = [d.month     for d in snap.index]
+    return snap
+
+
+def _apply_cc_conditions(snap: pd.DataFrame) -> pd.DataFrame:
+    """Filter the snapshot table against active conditions in session state."""
+    mask = pd.Series(True, index=snap.index)
+    for cid in st.session_state.get("cc_ids", []):
+        if not st.session_state.get(f"cc_{cid}_enabled", True):
+            continue
+        ct = st.session_state.get(f"cc_{cid}_type", _CC_COND_TYPES[0])
+
+        if ct == "% from open at time":
+            col = "pct_at_" + st.session_state.get(f"cc_{cid}_time", "11:00").replace(":", "")
+            lo  = float(st.session_state.get(f"cc_{cid}_pct_min", -1.0))
+            hi  = float(st.session_state.get(f"cc_{cid}_pct_max", -0.1))
+            if col in snap.columns:
+                mask &= snap[col].between(lo, hi)
+
+        elif ct == "Days from event":
+            ev_map = {
+                "OPEX":    "days_from_opex",
+                "VIX Exp": "days_from_vix_exp",
+                "FOMC":    "days_from_fomc",
+            }
+            col = ev_map.get(st.session_state.get(f"cc_{cid}_event", "VIX Exp"), "")
+            lo  = int(st.session_state.get(f"cc_{cid}_days_min", -3))
+            hi  = int(st.session_state.get(f"cc_{cid}_days_max",  3))
+            if col and col in snap.columns:
+                mask &= snap[col].between(lo, hi)
+
+        elif ct == "Day of week":
+            dows = st.session_state.get(f"cc_{cid}_dow", list(range(5)))
+            if dows:
+                mask &= snap["day_of_week"].isin(dows)
+
+        elif ct == "Month":
+            mos = st.session_state.get(f"cc_{cid}_months", list(range(1, 13)))
+            if mos:
+                mask &= snap["month"].isin(mos)
+
+        elif ct == "Overnight gap":
+            lo = float(st.session_state.get(f"cc_{cid}_gap_min", -1.0))
+            hi = float(st.session_state.get(f"cc_{cid}_gap_max",  1.0))
+            if "gap_pct" in snap.columns:
+                mask &= snap["gap_pct"].between(lo, hi)
+
+    return snap[mask]
 
 
 # =========================
@@ -460,210 +602,846 @@ with col_chart:
 # 3. COMPARE DATES
 # =========================
 st.write("")
-st.markdown('<div class="section-label">Compare dates</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-label">Event comparison</div>', unsafe_allow_html=True)
 
-_COMPARE_COLORS = ["#B71AFF", "#4B7BFF", "#1A1A1A", "#888888", "#C8C8C8"]
-_COMPARE_LABELS = ["Date A", "Date B", "Date C", "Date D", "Date E"]
+_CMP_COLORS = [
+    "#B71AFF", "#4B7BFF", "#FF6B35", "#11B8A0",
+    "#FF3D54", "#F5A623", "#4CAF50", "#888888",
+]
+_CMP_ENTRY_TYPES = ["FOMC", "OPEX", "VIX Exp", "Specific date"]
+_CMP_OFFSET_OPTS = ["-3 days", "-2 days", "-1 day", "Day of", "+1 day", "+2 days"]
+_CMP_OFFSET_VALS = {"-3 days": -3, "-2 days": -2, "-1 day": -1,
+                    "Day of": 0, "+1 day": 1, "+2 days": 2}
+_CMP_RANGE_OPTS  = ["3M", "6M", "1Y", "2Y", "All"]
+_CMP_RANGE_DAYS  = {"3M": 91, "6M": 182, "1Y": 365, "2Y": 730, "All": None}
+_CMP_GAP_OPTS    = ["All", "Gap up ↑", "Gap down ↓"]
+
+# ── Session state init ─────────────────────────────────────────────────────
+if "cmp_ids"     not in st.session_state: st.session_state["cmp_ids"]     = []
+if "cmp_next_id" not in st.session_state: st.session_state["cmp_next_id"] = 0
+if "cmp_range"   not in st.session_state: st.session_state["cmp_range"]   = "All"
+if "cmp_gap"     not in st.session_state: st.session_state["cmp_gap"]     = "All"
+
+
+def _cmp_add(entry_type: str = "FOMC", offset: str = "Day of") -> None:
+    cid = st.session_state["cmp_next_id"]
+    st.session_state["cmp_next_id"] += 1
+    st.session_state["cmp_ids"].append(cid)
+    st.session_state[f"cmp_{cid}_type"]    = entry_type
+    st.session_state[f"cmp_{cid}_offset"]  = offset
+    st.session_state[f"cmp_{cid}_date"]    = datetime.date.today() - datetime.timedelta(days=1)
+    st.session_state[f"cmp_{cid}_enabled"] = True
+
+
+def _cmp_del(cid: int) -> None:
+    st.session_state["cmp_ids"].remove(cid)
+
+
+# Seed default entry on first load
+if not st.session_state["cmp_ids"]:
+    _cmp_add("FOMC", "Day of")
+
 
 with st.container(border=True):
     today = datetime.date.today()
     frd_loaded = os.path.exists(_FRD_5MIN_PATH)
     min_date = _FRD_MIN_DATE if frd_loaded else today - datetime.timedelta(days=MINUTE_HISTORY_DAYS)
 
-    _SCHWAB_START = today - datetime.timedelta(days=MINUTE_HISTORY_DAYS)
+    # ── Header ─────────────────────────────────────────────────────────────
+    _cmp_h1, _cmp_h2 = st.columns([2, 8])
+    with _cmp_h1:
+        if st.button("＋  Add event", key="cmp_add_btn", use_container_width=True):
+            _cmp_add()
+    if st.session_state["cmp_ids"]:
+        with _cmp_h2:
+            _, _cmp_clr = st.columns([9, 1])
+            with _cmp_clr:
+                if st.button("Clear all", key="cmp_clr_btn"):
+                    st.session_state["cmp_ids"] = []
 
-    def _source_label(d: datetime.date) -> tuple[str, str]:
-        """Return (label, color) for the data source expected for a given date."""
-        if not isinstance(d, datetime.date):
-            return "", "#888"
-        if frd_loaded and d >= _FRD_MIN_DATE:
-            return "SPX · FirstRateData", "#444"
-        if d >= _SCHWAB_START:
-            return "SPX · Schwab API", "#444"
-        return "No data available", "#FF3D54"
+    # ── Entry rows ─────────────────────────────────────────────────────────
+    for _ci, _cid in enumerate(list(st.session_state["cmp_ids"])):
+        st.markdown(
+            '<hr style="border:none;border-top:1px solid #EBEBEB;margin:6px 0 4px;">',
+            unsafe_allow_html=True,
+        )
+        _cmp_dot = _CMP_COLORS[_ci % len(_CMP_COLORS)]
+        _ct_col, _co_col, _cd_col, _ctog, _cdel = st.columns([1.8, 1.8, 2.2, 0.55, 0.45])
 
-    def _recent_dates(event_type: str, n: int = 5) -> list[datetime.date]:
-        """Return the n most recent past dates of a given event type, newest→oldest."""
-        lookback = today - datetime.timedelta(days=365 * 2)
-        evts = get_financial_events(lookback, today)
-        return sorted(
-            [d for d, lbl in evts if event_type in lbl and d <= today],
-            reverse=True,
-        )[:n]
-
-    def _last_n_weekdays(n: int = 5) -> list[datetime.date]:
-        """Return the n most recent Mon–Fri days before today, newest→oldest."""
-        days, d = [], today - datetime.timedelta(days=1)
-        while len(days) < n:
-            if d.weekday() < 5:
-                days.append(d)
-            d -= datetime.timedelta(days=1)
-        return days
-
-    _PRESET_OPTIONS = ["FOMC", "OPEX", "VIX Exp", "Last 5 days"]
-
-    _preset = st.pills(
-        "Quick load",
-        options=_PRESET_OPTIONS,
-        default="FOMC",
-        key="study_compare_preset",
-        label_visibility="collapsed",
-    )
-
-    st.write("")
-
-    # If the user deselects all pills, snap back to the last known preset.
-    _effective_preset = _preset or st.session_state.get("study_compare_preset_last", "FOMC")
-
-    # When effective preset changes, overwrite the date picker session state keys.
-    if st.session_state.get("study_compare_preset_last") != _effective_preset:
-        st.session_state["study_compare_preset_last"] = _effective_preset
-        if _effective_preset == "FOMC":
-            _preset_dates = sorted([d for d in FOMC_DATES if d <= today], reverse=True)[:5]
-        elif _effective_preset == "Last 5 days":
-            _preset_dates = _last_n_weekdays()
-        else:
-            _preset_dates = _recent_dates(_effective_preset)
-        for _i in range(5):
-            st.session_state[f"study_compare_date_{_i}"] = (
-                _preset_dates[_i] if _i < len(_preset_dates) else None
-            )
-
-    # Seed session state on very first load (no preset change has fired yet).
-    if "study_compare_preset_last" not in st.session_state:
-        _seed = sorted([d for d in FOMC_DATES if d <= today], reverse=True)[:5]
-        for _i in range(5):
-            st.session_state[f"study_compare_date_{_i}"] = (
-                _seed[_i] if _i < len(_seed) else None
-            )
-
-    _pick_cols = st.columns(5)
-    _compare_dates = []
-    for _i, (_col, _label) in enumerate(zip(_pick_cols, _COMPARE_LABELS)):
-        with _col:
-            _dot_color = _COMPARE_COLORS[_i]
+        with _ct_col:
             st.markdown(
-                f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">'
-                f'<span style="width:6px;height:6px;border-radius:50%;background:{_dot_color};display:inline-block;flex-shrink:0;"></span>'
-                f'<span style="font-size:12px;color:#444;">{_label}</span>'
-                f'</div>',
+                f'<div style="display:flex;align-items:center;gap:7px;margin-bottom:2px;">'
+                f'<span style="width:8px;height:8px;border-radius:50%;background:{_cmp_dot};'
+                f'display:inline-block;flex-shrink:0;"></span>'
+                f'<span style="font-size:11px;color:#999;">Event type</span></div>',
                 unsafe_allow_html=True,
             )
-            _d = st.date_input(
-                _label,
-                value=None,
-                min_value=min_date,
-                max_value=today,
-                format="MM/DD/YYYY",
-                key=f"study_compare_date_{_i}",
+            st.selectbox(
+                "Type", _CMP_ENTRY_TYPES,
+                key=f"cmp_{_cid}_type",
                 label_visibility="collapsed",
             )
-            _compare_dates.append(_d)
+        _cmp_ct = st.session_state[f"cmp_{_cid}_type"]
 
-    _compare_dfs = [
-        get_spx_5min_for_date(d) if isinstance(d, datetime.date) else pd.DataFrame()
-        for d in _compare_dates
-    ]
+        with _co_col:
+            if _cmp_ct != "Specific date":
+                st.markdown(
+                    '<p style="font-size:11px;color:#999;margin-bottom:2px;">Offset</p>',
+                    unsafe_allow_html=True,
+                )
+                st.selectbox(
+                    "Offset", _CMP_OFFSET_OPTS,
+                    key=f"cmp_{_cid}_offset",
+                    label_visibility="collapsed",
+                )
+            else:
+                st.write("")
 
+        with _cd_col:
+            if _cmp_ct == "Specific date":
+                st.markdown(
+                    '<p style="font-size:11px;color:#999;margin-bottom:2px;">Date</p>',
+                    unsafe_allow_html=True,
+                )
+                st.date_input(
+                    "Date",
+                    min_value=min_date,
+                    max_value=today,
+                    format="MM/DD/YYYY",
+                    key=f"cmp_{_cid}_date",
+                    label_visibility="collapsed",
+                )
+            else:
+                st.write("")
+
+        with _ctog:
+            st.markdown(
+                '<p style="font-size:11px;color:#999;margin-bottom:2px;">&nbsp;</p>',
+                unsafe_allow_html=True,
+            )
+            st.toggle("On", key=f"cmp_{_cid}_enabled", label_visibility="collapsed")
+
+        with _cdel:
+            st.markdown(
+                '<p style="font-size:11px;color:#999;margin-bottom:2px;">&nbsp;</p>',
+                unsafe_allow_html=True,
+            )
+            if st.button("✕", key=f"cmp_del_{_cid}"):
+                _cmp_del(_cid)
+                st.rerun()
+
+    # ── Global filters ──────────────────────────────────────────────────────
+    if st.session_state["cmp_ids"]:
+        st.markdown('<div style="height:6px;"></div>', unsafe_allow_html=True)
+        _cf1, _cf2 = st.columns(2)
+        with _cf1:
+            st.markdown(
+                '<p style="font-size:11px;color:#999;margin-bottom:2px;">Time range</p>',
+                unsafe_allow_html=True,
+            )
+            st.pills(
+                "Range", _CMP_RANGE_OPTS,
+                key="cmp_range",
+                label_visibility="collapsed",
+            )
+        with _cf2:
+            st.markdown(
+                '<p style="font-size:11px;color:#999;margin-bottom:2px;">Overnight gap</p>',
+                unsafe_allow_html=True,
+            )
+            st.pills(
+                "Gap", _CMP_GAP_OPTS,
+                key="cmp_gap",
+                label_visibility="collapsed",
+            )
+
+    st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
+
+    # ── Build gap map and trading day index from daily data ─────────────────
     _ref = datetime.date(2000, 1, 3)
+    _cmp_daily = _load_frd_daily()
+    _cmp_gap_map: dict[datetime.date, float] = {}
+    _cmp_td_idx: pd.DatetimeIndex = pd.DatetimeIndex([])
+    if not _cmp_daily.empty:
+        _cmp_ds = _cmp_daily.sort_index()
+        _cmp_td_idx = _cmp_ds.index
+        _cmp_gap_s = (_cmp_ds["Open"] / _cmp_ds["Close"].shift(1) - 1) * 100
+        for _ts, _gv in _cmp_gap_s.items():
+            if pd.notna(_gv):
+                _cmp_gap_map[_ts.date()] = float(_gv)
+
+    # Pre-load the full 5-min CSV once — slicing it per date is much faster
+    # than calling get_spx_5min_for_date() which may trigger Schwab API calls.
+    _cmp_frd5 = _load_frd_5min()
+
+    def _cmp_day_bars(d: datetime.date) -> pd.DataFrame:
+        """Return 5-min bars for date, reading CSV directly without API calls."""
+        if not _cmp_frd5.empty:
+            _ots = pd.Timestamp(d)
+            _ote = _ots + pd.Timedelta(hours=23, minutes=59)
+            _day = _cmp_frd5.loc[_ots:_ote]
+            if not _day.empty:
+                return _day[["Open", "High", "Low", "Close"]]
+        # Only touch Schwab for recent dates that may not yet be in the CSV
+        if d >= datetime.date.today() - datetime.timedelta(days=MINUTE_HISTORY_DAYS):
+            return get_spx_5min_for_date(d)
+        return pd.DataFrame()
 
     def _to_time_axis(df: pd.DataFrame):
         if df.empty:
             return [], []
         times = [datetime.datetime.combine(_ref, ts.time()) for ts in df.index]
-        open_px = float(df['Open'].iloc[0])
-        pct = ((df['Close'] / open_px - 1) * 100).round(2)
+        open_px = float(df["Open"].iloc[0])
+        pct = ((df["Close"] / open_px - 1) * 100).round(2)
         return times, pct
 
-    _empty_layout = dict(
+    def _cmp_resolve(cid: int) -> tuple[list[datetime.date], str]:
+        """Resolve one entry to (date_list, legend_label)."""
+        ctype   = st.session_state.get(f"cmp_{cid}_type", "FOMC")
+        today_  = datetime.date.today()
+
+        if ctype == "Specific date":
+            d = st.session_state.get(f"cmp_{cid}_date")
+            if isinstance(d, datetime.date):
+                return [d], d.strftime("%b %-d, %Y")
+            return [], "Specific date"
+
+        # Time range cutoff
+        rng      = st.session_state.get("cmp_range") or "1Y"
+        rng_days = _CMP_RANGE_DAYS.get(rng)
+        cutoff   = (today_ - datetime.timedelta(days=rng_days)) if rng_days else datetime.date(2000, 1, 1)
+
+        # Raw event dates within the window
+        all_ev = get_financial_events(cutoff, today_)
+        if ctype == "FOMC":
+            raw = sorted(d for d in FOMC_DATES if cutoff <= d <= today_)
+        elif ctype == "OPEX":
+            raw = sorted(d for d, lbl in all_ev if "OPEX" in lbl and d <= today_)
+        else:  # VIX Exp
+            raw = sorted(d for d, lbl in all_ev if lbl == "VIX Exp" and d <= today_)
+
+        # Apply trading-day offset using the daily calendar index
+        offset_val = _CMP_OFFSET_VALS.get(
+            st.session_state.get(f"cmp_{cid}_offset", "Day of"), 0
+        )
+        resolved = []
+        if len(_cmp_td_idx) > 0:
+            for ev_d in raw:
+                pos    = int(_cmp_td_idx.searchsorted(pd.Timestamp(ev_d)))
+                target = pos + offset_val
+                if 0 <= target < len(_cmp_td_idx):
+                    resolved.append(_cmp_td_idx[target].date())
+
+        # Overnight gap filter
+        gap_f = st.session_state.get("cmp_gap") or "All"
+        if gap_f == "Gap up ↑":
+            resolved = [d for d in resolved if _cmp_gap_map.get(d, 0) > 0]
+        elif gap_f == "Gap down ↓":
+            resolved = [d for d in resolved if _cmp_gap_map.get(d, 0) < 0]
+
+        # Deduplicate preserving order
+        seen, out = set(), []
+        for d in resolved:
+            if d not in seen:
+                seen.add(d)
+                out.append(d)
+
+        off = st.session_state.get(f"cmp_{cid}_offset", "Day of")
+        off_label = f" ({off})" if off != "Day of" else ""
+        return out, f"{ctype}{off_label}"
+
+    # ── Resolve all entries once, reuse for both histogram and chart ─────────
+    _cmp_fig = go.Figure()
+    _cmp_legend_items: list[tuple[str, str, int]] = []
+    _cmp_all_entries: list[tuple[str, str, list[datetime.date]]] = []  # (color, label, dates)
+
+    for _ci, _cid in enumerate(st.session_state["cmp_ids"]):
+        if not st.session_state.get(f"cmp_{_cid}_enabled", True):
+            continue
+        _cmp_color = _CMP_COLORS[_ci % len(_CMP_COLORS)]
+        _cmp_dates, _cmp_lbl = _cmp_resolve(_cid)
+        if not _cmp_dates:
+            continue
+        _cmp_legend_items.append((_cmp_color, _cmp_lbl, len(_cmp_dates)))
+        _cmp_all_entries.append((_cmp_color, _cmp_lbl, _cmp_dates))
+
+    # ── Histogram (EOD returns from daily OHLC — no 5-min needed) ────────────
+    if _cmp_all_entries and not _cmp_daily.empty:
+        _cmp_eod_all: list[float] = []
+        for _, _, _entry_dates in _cmp_all_entries:
+            for _ed in _entry_dates:
+                _ed_ts = pd.Timestamp(_ed)
+                if _ed_ts in _cmp_daily.index:
+                    _row = _cmp_daily.loc[_ed_ts]
+                    if _row["Open"] != 0:
+                        _cmp_eod_all.append(
+                            float((_row["Close"] - _row["Open"]) / _row["Open"] * 100)
+                        )
+
+        if _cmp_eod_all:
+            _cmp_eod_s  = pd.Series(_cmp_eod_all)
+            _cmp_h_mean = _cmp_eod_s.mean()
+            _cmp_h_med  = _cmp_eod_s.median()
+            _cmp_h_ppos = (_cmp_eod_s >= 0).mean() * 100
+            _cmp_h_std  = _cmp_eod_s.std()
+            _cmp_h_n    = len(_cmp_eod_s)
+
+            # N badge
+            if _cmp_h_n < 30:
+                _hbg, _hfg = "#FF8C0020", "#CC7000"
+            elif _cmp_h_n < 75:
+                _hbg, _hfg = "#F5C51820", "#A08500"
+            else:
+                _hbg, _hfg = "#11F18520", "#0AA855"
+
+            def _cmp_spill(label: str, val: str, color: str = "#444") -> str:
+                return (
+                    f'<span style="display:inline-block;padding:4px 12px;border-radius:6px;'
+                    f'background:#F1F2F6;font-size:12px;color:#555;margin:0 6px 6px 0;">'
+                    f'{label}: <b style="color:{color};">{val}</b></span>'
+                )
+
+            _cmp_mc = "#11F185" if _cmp_h_mean >= 0 else "#FF3D54"
+            _cmp_dc = "#11F185" if _cmp_h_med  >= 0 else "#FF3D54"
+            _cmp_pc = "#11F185" if _cmp_h_ppos >= 50 else "#FF3D54"
+
+            st.markdown(
+                f'<div style="display:inline-block;padding:4px 12px;border-radius:7px;'
+                f'background:{_hbg};border:1px solid {_hfg}44;'
+                f'font-size:12px;font-weight:600;color:{_hfg};margin-bottom:10px;">'
+                f'N = {_cmp_h_n}</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                '<div style="margin-bottom:10px;">'
+                + _cmp_spill("Mean EOD",   f'{"+" if _cmp_h_mean >= 0 else ""}{_cmp_h_mean:.2f}%', _cmp_mc)
+                + _cmp_spill("Median EOD", f'{"+" if _cmp_h_med  >= 0 else ""}{_cmp_h_med:.2f}%',  _cmp_dc)
+                + _cmp_spill("% Positive", f'{_cmp_h_ppos:.0f}%',                                   _cmp_pc)
+                + _cmp_spill("Std Dev",    f'{_cmp_h_std:.2f}%')
+                + '</div>',
+                unsafe_allow_html=True,
+            )
+
+            _cmp_rng  = float(_cmp_eod_s.max() - _cmp_eod_s.min())
+            _cmp_bsz  = 0.1 if _cmp_rng < 1.5 else (0.25 if _cmp_rng < 5.0 else 0.5)
+            _cmp_blo  = np.floor(_cmp_eod_s.min() / _cmp_bsz) * _cmp_bsz - _cmp_bsz
+            _cmp_bhi  = np.ceil( _cmp_eod_s.max() / _cmp_bsz) * _cmp_bsz + _cmp_bsz
+            _cmp_bins = np.arange(_cmp_blo, _cmp_bhi + _cmp_bsz, _cmp_bsz)
+            _cmp_cnts, _cmp_edges = np.histogram(_cmp_eod_s.values, bins=_cmp_bins)
+            _cmp_ctrs  = (_cmp_edges[:-1] + _cmp_edges[1:]) / 2
+            _cmp_bclrs = ["#11F185" if c >= 0 else "#FF3D54" for c in _cmp_ctrs]
+            _cmp_bpcts = _cmp_cnts / _cmp_cnts.sum() * 100 if _cmp_cnts.sum() > 0 else _cmp_cnts * 0.0
+
+            _cmp_hfig = go.Figure()
+            _cmp_hfig.add_trace(go.Bar(
+                x=_cmp_ctrs, y=_cmp_cnts,
+                marker_color=_cmp_bclrs, marker_line_width=0,
+                width=_cmp_bsz * 0.88,
+                customdata=_cmp_bpcts,
+                hovertemplate="%{x:+.2f}%  →  %{y} days (%{customdata:.1f}%)<extra></extra>",
+            ))
+            _cmp_hfig.add_vline(x=0, line_color="#C8C8C8", line_width=1, line_dash="dot")
+            _cmp_hfig.add_vline(x=_cmp_h_mean, line_color="#1A1A1A", line_width=1.5)
+            _cmp_hfig.add_vline(x=_cmp_h_med,  line_color="#888888", line_width=1, line_dash="dot")
+            _cmp_hfig.add_annotation(
+                x=_cmp_h_mean, xref="x", y=1.08, yref="paper",
+                text=f"mean {_cmp_h_mean:+.2f}%",
+                showarrow=False, xanchor="right", yanchor="bottom",
+                font=dict(size=10, color="#1A1A1A"),
+            )
+            _cmp_hfig.add_annotation(
+                x=_cmp_h_med, xref="x", y=1.08, yref="paper",
+                text=f"median {_cmp_h_med:+.2f}%",
+                showarrow=False, xanchor="left", yanchor="bottom",
+                font=dict(size=10, color="#888888"),
+            )
+            _cmp_hfig.update_layout(
+                height=260,
+                margin=dict(l=50, r=20, t=46, b=40),
+                plot_bgcolor="white", paper_bgcolor="white",
+                bargap=0.06,
+                xaxis=dict(
+                    showgrid=True, gridcolor="#F0F0F0", ticksuffix="%",
+                    title=dict(text="EOD % from open", font=dict(size=11, color="#888")),
+                ),
+                yaxis=dict(
+                    showgrid=True, gridcolor="#F0F0F0",
+                    title=dict(text="# of days", font=dict(size=11, color="#888")),
+                ),
+                showlegend=False,
+            )
+            st.plotly_chart(
+                _cmp_hfig, use_container_width=True,
+                key="cmp_hist", config={"displayModeBar": False},
+            )
+
+    # ── Build intraday overlay chart ─────────────────────────────────────────
+    for _cmp_color, _cmp_lbl, _cmp_dates in _cmp_all_entries:
+        for _cd in _cmp_dates:
+            _cdf = _cmp_day_bars(_cd)
+            if _cdf.empty:
+                continue
+            _cx, _cy = _to_time_axis(_cdf)
+            if not _cx:
+                continue
+            _cmp_fig.add_trace(go.Scatter(
+                x=_cx, y=_cy, mode="lines",
+                legendgroup=_cmp_lbl,
+                showlegend=False,
+                line=dict(color=_cmp_color, width=0.9),
+                opacity=0.5,
+                hovertemplate=f'{_cd.strftime("%b %-d, %Y")}: %{{y:+.2f}}%<extra></extra>',
+            ))
+
+    _cmp_fig.add_hline(y=0, line_dash="dot", line_color="#B2B2B2", line_width=1)
+    _cmp_fig.update_layout(
+        dragmode="zoom", uirevision="constant",
         height=560,
         margin=dict(l=60, r=20, t=10, b=30),
         plot_bgcolor="white", paper_bgcolor="white",
+        hovermode="x unified",
+        hoverlabel=dict(
+            bgcolor="rgba(255, 255, 255, 0.85)",
+            bordercolor="rgba(0, 0, 0, 0)",
+            font=dict(color="#1E1E1E"),
+        ),
         xaxis=dict(
             showgrid=True, gridcolor="#F0F0F0",
-            tickformat="%H:%M",
+            tickformat="%H:%M", hoverformat="%H:%M",
             range=[
                 datetime.datetime.combine(_ref, datetime.time(9, 30)),
                 datetime.datetime.combine(_ref, datetime.time(16, 0)),
             ],
+            showspikes=True, spikemode="across", spikesnap="cursor",
+            spikedash="1, 3", spikecolor="#B2B2B2", spikethickness=1,
             rangeslider=dict(visible=False),
         ),
         yaxis=dict(
+            automargin=False,
             showgrid=True, gridcolor="#F0F0F0", side="left",
             title=dict(text="% from open", font=dict(size=10, color="#666")),
             ticksuffix="%",
+            showspikes=True, spikemode="across", spikesnap="cursor",
+            spikedash="1, 3", spikecolor="#B2B2B2", spikethickness=1,
         ),
     )
 
-    if all(df.empty for df in _compare_dfs):
-        _empty_fig = go.Figure()
-        _empty_fig.add_hline(y=0, line_dash="dot", line_color="#B2B2B2", line_width=1)
-        _empty_fig.update_layout(**_empty_layout)
-        st.plotly_chart(_empty_fig, use_container_width=True, config={'displayModeBar': False})
-    else:
-        fig = go.Figure()
-        for _d, _df, _color, _label in zip(_compare_dates, _compare_dfs, _COMPARE_COLORS, _COMPARE_LABELS):
-            if not isinstance(_d, datetime.date):
-                continue
-            _x, _y = _to_time_axis(_df)
-            if len(_x) > 0:
-                fig.add_trace(go.Scatter(
-                    x=_x, y=_y, mode='lines',
-                    name=_d.strftime("%b %-d, %Y"),
-                    line=dict(color=_color, width=1),
-                    showlegend=False,
-                    hovertemplate="%{y:+.2f}%<extra></extra>",
-                ))
+    # Legend strip above chart
+    if _cmp_legend_items:
+        _leg_html = '<div style="display:flex;flex-wrap:wrap;gap:16px;margin-bottom:8px;">'
+        for _lc, _ll, _ln in _cmp_legend_items:
+            _leg_html += (
+                f'<span style="display:flex;align-items:center;gap:5px;">'
+                f'<span style="width:12px;height:3px;background:{_lc};border-radius:2px;'
+                f'display:inline-block;"></span>'
+                f'<span style="font-size:12px;color:#444;">{_ll}</span>'
+                f'<span style="font-size:11px;color:#aaa;">({_ln})</span>'
+                f'</span>'
+            )
+        _leg_html += '</div>'
+        st.markdown(_leg_html, unsafe_allow_html=True)
 
-        fig.add_hline(y=0, line_dash="dot", line_color="#B2B2B2", line_width=1)
-
-        fig.update_layout(
-            dragmode="zoom",
-            uirevision="constant",
-            height=560,
-            margin=dict(l=60, r=20, t=10, b=30),
-            plot_bgcolor="white", paper_bgcolor="white",
-            hovermode="x unified",
-            hoverlabel=dict(
-                bgcolor="rgba(255, 255, 255, 0.85)",
-                bordercolor="rgba(0, 0, 0, 0)",
-                font=dict(color="#1E1E1E"),
-            ),
-            legend=dict(
-                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                bgcolor="rgba(0,0,0,0)", font=dict(size=11),
-            ),
-            xaxis=dict(
-                showgrid=True, gridcolor="#F0F0F0",
-                tickformat="%H:%M",
-                hoverformat="%H:%M",
-                range=[
-                    datetime.datetime.combine(_ref, datetime.time(9, 30)),
-                    datetime.datetime.combine(_ref, datetime.time(16, 0)),
-                ],
-                showspikes=True, spikemode="across", spikesnap="cursor",
-                spikedash="1, 3", spikecolor="#B2B2B2", spikethickness=1,
-                rangeslider=dict(visible=False),
-            ),
-            yaxis=dict(
-                automargin=False,
-                showgrid=True, gridcolor="#F0F0F0", side="left",
-                title=dict(text="% from open", font=dict(size=10, color="#666")),
-                ticksuffix="%",
-                showspikes=True, spikemode="across", spikesnap="cursor",
-                spikedash="1, 3", spikecolor="#B2B2B2", spikethickness=1,
-            ),
-        )
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-            key="study_compare_chart",
-            config={'displayModeBar': False},
-        )
+    st.plotly_chart(
+        _cmp_fig,
+        use_container_width=True,
+        key="study_compare_chart",
+        config={'displayModeBar': False},
+    )
 
 
 # =========================
-# 4. EVENT IMPACT TABLE
+# 4. CONDITIONAL COMPARISON
+# =========================
+st.write("")
+st.markdown('<div class="section-label">Conditional comparison</div>', unsafe_allow_html=True)
+
+# Session state init
+if "cc_ids"     not in st.session_state:
+    st.session_state["cc_ids"]     = []
+if "cc_next_id" not in st.session_state:
+    st.session_state["cc_next_id"] = 0
+
+
+def _cc_add() -> None:
+    cid = st.session_state["cc_next_id"]
+    st.session_state["cc_next_id"] += 1
+    st.session_state["cc_ids"].append(cid)
+    # Initialise all possible keys so widgets never see a missing key
+    st.session_state[f"cc_{cid}_type"]     = _CC_COND_TYPES[0]
+    st.session_state[f"cc_{cid}_enabled"]  = True
+    st.session_state[f"cc_{cid}_time"]     = "11:00"
+    st.session_state[f"cc_{cid}_pct_min"]  = -1.0
+    st.session_state[f"cc_{cid}_pct_max"]  = -0.1
+    st.session_state[f"cc_{cid}_event"]    = "VIX Exp"
+    st.session_state[f"cc_{cid}_days_min"] = -3
+    st.session_state[f"cc_{cid}_days_max"] =  3
+    st.session_state[f"cc_{cid}_gap_min"]  = -1.0
+    st.session_state[f"cc_{cid}_gap_max"]  =  1.0
+    st.session_state[f"cc_{cid}_dow"]      = list(range(5))
+    st.session_state[f"cc_{cid}_months"]   = list(range(1, 13))
+
+
+def _cc_del(cid: int) -> None:
+    st.session_state["cc_ids"].remove(cid)
+
+
+with st.container(border=True):
+    # ── Header row ────────────────────────────────────────────────────────
+    _cc_hdr_l, _cc_hdr_r = st.columns([2, 8])
+    with _cc_hdr_l:
+        if st.button("＋  Add condition", key="cc_add_btn", use_container_width=True):
+            _cc_add()
+    if st.session_state["cc_ids"]:
+        with _cc_hdr_r:
+            _, _cc_clr_col = st.columns([9, 1])
+            with _cc_clr_col:
+                if st.button("Clear all", key="cc_clr_btn"):
+                    st.session_state["cc_ids"] = []
+
+    # ── Condition rows ─────────────────────────────────────────────────────
+    for _cid in list(st.session_state["cc_ids"]):
+        st.markdown(
+            '<hr style="border:none;border-top:1px solid #EBEBEB;margin:6px 0 4px;">',
+            unsafe_allow_html=True,
+        )
+        _cc_type_col, _cc_params_col, _cc_tog_col, _cc_del_col = st.columns(
+            [2, 5, 0.55, 0.45]
+        )
+
+        with _cc_type_col:
+            st.markdown(
+                '<p style="font-size:11px;color:#999;margin-bottom:2px;">Condition type</p>',
+                unsafe_allow_html=True,
+            )
+            st.selectbox(
+                "Type", _CC_COND_TYPES,
+                key=f"cc_{_cid}_type",
+                label_visibility="collapsed",
+            )
+        _ct = st.session_state[f"cc_{_cid}_type"]
+
+        with _cc_params_col:
+            if _ct == "% from open at time":
+                _pa, _pb, _pc = st.columns([1.2, 1, 1])
+                with _pa:
+                    st.markdown(
+                        '<p style="font-size:11px;color:#999;margin-bottom:2px;">At time (ET)</p>',
+                        unsafe_allow_html=True,
+                    )
+                    st.selectbox(
+                        "Time", _CC_TIME_OPTS,
+                        key=f"cc_{_cid}_time",
+                        label_visibility="collapsed",
+                    )
+                with _pb:
+                    st.markdown(
+                        '<p style="font-size:11px;color:#999;margin-bottom:2px;">Min %</p>',
+                        unsafe_allow_html=True,
+                    )
+                    st.number_input(
+                        "Min %", step=0.1, format="%.2f",
+                        key=f"cc_{_cid}_pct_min",
+                        label_visibility="collapsed",
+                    )
+                with _pc:
+                    st.markdown(
+                        '<p style="font-size:11px;color:#999;margin-bottom:2px;">Max %</p>',
+                        unsafe_allow_html=True,
+                    )
+                    st.number_input(
+                        "Max %", step=0.1, format="%.2f",
+                        key=f"cc_{_cid}_pct_max",
+                        label_visibility="collapsed",
+                    )
+
+            elif _ct == "Days from event":
+                _pa, _pb, _pc = st.columns([1.2, 1, 1])
+                with _pa:
+                    st.markdown(
+                        '<p style="font-size:11px;color:#999;margin-bottom:2px;">Event</p>',
+                        unsafe_allow_html=True,
+                    )
+                    st.selectbox(
+                        "Event", _CC_EVENT_OPTS,
+                        key=f"cc_{_cid}_event",
+                        label_visibility="collapsed",
+                    )
+                with _pb:
+                    st.markdown(
+                        '<p style="font-size:11px;color:#999;margin-bottom:2px;">Min days (neg = before)</p>',
+                        unsafe_allow_html=True,
+                    )
+                    st.number_input(
+                        "Min days", step=1,
+                        key=f"cc_{_cid}_days_min",
+                        label_visibility="collapsed",
+                    )
+                with _pc:
+                    st.markdown(
+                        '<p style="font-size:11px;color:#999;margin-bottom:2px;">Max days (pos = after)</p>',
+                        unsafe_allow_html=True,
+                    )
+                    st.number_input(
+                        "Max days", step=1,
+                        key=f"cc_{_cid}_days_max",
+                        label_visibility="collapsed",
+                    )
+
+            elif _ct == "Day of week":
+                st.markdown(
+                    '<p style="font-size:11px;color:#999;margin-bottom:2px;">Select days</p>',
+                    unsafe_allow_html=True,
+                )
+                st.multiselect(
+                    "Days", list(range(5)),
+                    format_func=lambda x: _CC_DOW_LABELS[x],
+                    key=f"cc_{_cid}_dow",
+                    label_visibility="collapsed",
+                )
+
+            elif _ct == "Month":
+                st.markdown(
+                    '<p style="font-size:11px;color:#999;margin-bottom:2px;">Select months</p>',
+                    unsafe_allow_html=True,
+                )
+                st.multiselect(
+                    "Months", list(range(1, 13)),
+                    format_func=lambda x: _CC_MON_LABELS[x - 1],
+                    key=f"cc_{_cid}_months",
+                    label_visibility="collapsed",
+                )
+
+            elif _ct == "Overnight gap":
+                _pa, _pb = st.columns(2)
+                with _pa:
+                    st.markdown(
+                        '<p style="font-size:11px;color:#999;margin-bottom:2px;">Min gap %</p>',
+                        unsafe_allow_html=True,
+                    )
+                    st.number_input(
+                        "Min gap %", step=0.1, format="%.2f",
+                        key=f"cc_{_cid}_gap_min",
+                        label_visibility="collapsed",
+                    )
+                with _pb:
+                    st.markdown(
+                        '<p style="font-size:11px;color:#999;margin-bottom:2px;">Max gap %</p>',
+                        unsafe_allow_html=True,
+                    )
+                    st.number_input(
+                        "Max gap %", step=0.1, format="%.2f",
+                        key=f"cc_{_cid}_gap_max",
+                        label_visibility="collapsed",
+                    )
+
+        with _cc_tog_col:
+            st.markdown(
+                '<p style="font-size:11px;color:#999;margin-bottom:2px;">&nbsp;</p>',
+                unsafe_allow_html=True,
+            )
+            st.toggle("On", key=f"cc_{_cid}_enabled", label_visibility="collapsed")
+
+        with _cc_del_col:
+            st.markdown(
+                '<p style="font-size:11px;color:#999;margin-bottom:2px;">&nbsp;</p>',
+                unsafe_allow_html=True,
+            )
+            if st.button("✕", key=f"cc_del_{_cid}"):
+                _cc_del(_cid)
+                st.rerun()
+
+    st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
+
+    # ── Results ────────────────────────────────────────────────────────────
+    _cc_snap = _build_daily_snapshots()
+
+    if _cc_snap.empty:
+        st.info("No 5-min historical data available for comparison.")
+    elif not st.session_state["cc_ids"]:
+        st.markdown(
+            '<p style="font-size:13px;color:#aaa;padding:2px 0 8px;">'
+            'Add a condition above to filter historical days and see EOD return distribution.</p>',
+            unsafe_allow_html=True,
+        )
+    else:
+        _cc_matched = _apply_cc_conditions(_cc_snap)
+        _cc_n = len(_cc_matched)
+
+        # N badge
+        if _cc_n == 0:
+            _cc_bg, _cc_fg, _cc_msg = "#FF3D5420", "#FF3D54", "No matching days"
+        elif _cc_n < 30:
+            _cc_bg, _cc_fg, _cc_msg = "#FF8C0020", "#CC7000", f"N = {_cc_n}  ·  thin sample — interpret carefully"
+        elif _cc_n < 75:
+            _cc_bg, _cc_fg, _cc_msg = "#F5C51820", "#A08500", f"N = {_cc_n}  ·  moderate sample"
+        else:
+            _cc_bg, _cc_fg, _cc_msg = "#11F18520", "#0AA855", f"N = {_cc_n}  ·  solid sample"
+
+        st.markdown(
+            f'<div style="display:inline-block;padding:5px 14px;border-radius:8px;'
+            f'background:{_cc_bg};border:1px solid {_cc_fg}44;'
+            f'font-size:13px;font-weight:600;color:{_cc_fg};margin-bottom:14px;">'
+            f'{_cc_msg}</div>',
+            unsafe_allow_html=True,
+        )
+
+        if _cc_n > 0:
+            _cc_eod = _cc_matched["eod_pct"].dropna()
+
+            if not _cc_eod.empty:
+                _cc_mean   = _cc_eod.mean()
+                _cc_med    = _cc_eod.median()
+                _cc_ppos   = (_cc_eod >= 0).mean() * 100
+                _cc_std    = _cc_eod.std()
+
+                def _cc_pill(label: str, val: str, color: str = "#444") -> str:
+                    return (
+                        f'<span style="display:inline-block;padding:4px 12px;border-radius:6px;'
+                        f'background:#F1F2F6;font-size:12px;color:#555;margin:0 6px 6px 0;">'
+                        f'{label}: <b style="color:{color};">{val}</b></span>'
+                    )
+
+                _mc = "#11F185" if _cc_mean >= 0 else "#FF3D54"
+                _dc = "#11F185" if _cc_med  >= 0 else "#FF3D54"
+                _pc = "#11F185" if _cc_ppos >= 50 else "#FF3D54"
+                st.markdown(
+                    '<div style="margin-bottom:12px;">'
+                    + _cc_pill("Mean EOD",    f'{"+" if _cc_mean >= 0 else ""}{_cc_mean:.2f}%', _mc)
+                    + _cc_pill("Median EOD",  f'{"+" if _cc_med  >= 0 else ""}{_cc_med:.2f}%',  _dc)
+                    + _cc_pill("% Positive",  f'{_cc_ppos:.0f}%',                               _pc)
+                    + _cc_pill("Std Dev",     f'{_cc_std:.2f}%')
+                    + '</div>',
+                    unsafe_allow_html=True,
+                )
+
+                # Histogram — adaptive bin size
+                _cc_range = float(_cc_eod.max() - _cc_eod.min())
+                _cc_bsz   = 0.1 if _cc_range < 1.5 else (0.25 if _cc_range < 5.0 else 0.5)
+                _cc_blo   = np.floor(_cc_eod.min() / _cc_bsz) * _cc_bsz - _cc_bsz
+                _cc_bhi   = np.ceil( _cc_eod.max() / _cc_bsz) * _cc_bsz + _cc_bsz
+                _cc_bins  = np.arange(_cc_blo, _cc_bhi + _cc_bsz, _cc_bsz)
+                _cc_cnts, _cc_edges = np.histogram(_cc_eod.values, bins=_cc_bins)
+                _cc_ctrs  = (_cc_edges[:-1] + _cc_edges[1:]) / 2
+                _cc_bclrs = ["#11F185" if c >= 0 else "#FF3D54" for c in _cc_ctrs]
+
+                _cc_bin_pcts = _cc_cnts / _cc_cnts.sum() * 100 if _cc_cnts.sum() > 0 else _cc_cnts * 0.0
+
+                _cc_hfig = go.Figure()
+                _cc_hfig.add_trace(go.Bar(
+                    x=_cc_ctrs, y=_cc_cnts,
+                    marker_color=_cc_bclrs,
+                    marker_line_width=0,
+                    width=_cc_bsz * 0.88,
+                    customdata=_cc_bin_pcts,
+                    hovertemplate="%{x:+.2f}%  →  %{y} days (%{customdata:.1f}%)<extra></extra>",
+                ))
+                _cc_hfig.add_vline(
+                    x=0, line_color="#C8C8C8", line_width=1, line_dash="dot",
+                )
+                _cc_hfig.add_vline(x=_cc_mean, line_color="#1A1A1A", line_width=1.5)
+                _cc_hfig.add_vline(x=_cc_med,  line_color="#888888", line_width=1, line_dash="dot")
+                _cc_hfig.add_annotation(
+                    x=_cc_mean, xref="x", y=1.08, yref="paper",
+                    text=f"mean {_cc_mean:+.2f}%",
+                    showarrow=False, xanchor="right", yanchor="bottom",
+                    font=dict(size=10, color="#1A1A1A"),
+                )
+                _cc_hfig.add_annotation(
+                    x=_cc_med, xref="x", y=1.08, yref="paper",
+                    text=f"median {_cc_med:+.2f}%",
+                    showarrow=False, xanchor="left", yanchor="bottom",
+                    font=dict(size=10, color="#888888"),
+                )
+                _cc_hfig.update_layout(
+                    height=300,
+                    margin=dict(l=50, r=20, t=46, b=40),
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    bargap=0.06,
+                    xaxis=dict(
+                        showgrid=True, gridcolor="#F0F0F0", ticksuffix="%",
+                        title=dict(text="EOD % from open", font=dict(size=11, color="#888")),
+                    ),
+                    yaxis=dict(
+                        showgrid=True, gridcolor="#F0F0F0",
+                        title=dict(text="# of days", font=dict(size=11, color="#888")),
+                    ),
+                    showlegend=False,
+                )
+                st.plotly_chart(
+                    _cc_hfig, use_container_width=True,
+                    key="cc_hist", config={"displayModeBar": False},
+                )
+
+                # Intraday overlay
+                if st.checkbox(
+                    "Show intraday traces for matching days",
+                    key="cc_overlay_tog",
+                    value=True,
+                ):
+                    _cc_ov_dates = sorted(_cc_matched.index.tolist(), reverse=True)[:25]
+                    _cc_frd5     = _load_frd_5min()
+                    _cc_ref      = datetime.date(2000, 1, 3)
+                    _cc_ofig     = go.Figure()
+
+                    for _cc_od in _cc_ov_dates:
+                        _cc_ots = pd.Timestamp(_cc_od)
+                        _cc_ote = _cc_ots + pd.Timedelta(hours=23, minutes=59)
+                        _cc_odf = (
+                            _cc_frd5.loc[_cc_ots:_cc_ote]
+                            if not _cc_frd5.empty else pd.DataFrame()
+                        )
+                        if _cc_odf.empty:
+                            continue
+                        _cc_ox   = [
+                            datetime.datetime.combine(_cc_ref, ts.time())
+                            for ts in _cc_odf.index
+                        ]
+                        _cc_oo   = float(_cc_odf["Open"].iloc[0])
+                        _cc_oy   = ((_cc_odf["Close"] / _cc_oo - 1) * 100).round(2).tolist()
+                        _cc_ev   = float(_cc_matched.loc[_cc_od, "eod_pct"])
+                        _cc_ofig.add_trace(go.Scatter(
+                            x=_cc_ox, y=_cc_oy, mode="lines",
+                            line=dict(
+                                color="#11F185" if _cc_ev >= 0 else "#FF3D54",
+                                width=0.8,
+                            ),
+                            opacity=0.4, showlegend=False,
+                            hovertemplate=(
+                                f'{_cc_od.strftime("%b %-d, %Y")}: %{{y:+.2f}}%<extra></extra>'
+                            ),
+                        ))
+
+                    _cc_ofig.add_hline(y=0, line_dash="dot", line_color="#C8C8C8", line_width=1)
+                    _cc_ofig.update_layout(
+                        height=400,
+                        margin=dict(l=60, r=20, t=16, b=30),
+                        plot_bgcolor="white", paper_bgcolor="white",
+                        hovermode="closest",
+                        xaxis=dict(
+                            showgrid=True, gridcolor="#F0F0F0", tickformat="%H:%M",
+                            range=[
+                                datetime.datetime.combine(_cc_ref, datetime.time(9, 30)),
+                                datetime.datetime.combine(_cc_ref, datetime.time(16, 0)),
+                            ],
+                            rangeslider=dict(visible=False),
+                        ),
+                        yaxis=dict(
+                            showgrid=True, gridcolor="#F0F0F0", ticksuffix="%",
+                            title=dict(text="% from open", font=dict(size=10, color="#888")),
+                        ),
+                    )
+                    st.caption(
+                        f"Showing {len(_cc_ov_dates)} most recent matching days  ·  "
+                        "green = positive EOD, red = negative EOD"
+                    )
+                    st.plotly_chart(
+                        _cc_ofig, use_container_width=True,
+                        key="cc_overlay", config={"displayModeBar": False},
+                    )
+
+
+# =========================
+# 5. EVENT IMPACT TABLE
 # =========================
 def _compute_event_impact(daily_df: pd.DataFrame, events: list) -> pd.DataFrame:
     """For each event type, compute count + average open-to-close and open-to-low
@@ -764,7 +1542,7 @@ with st.container(border=True):
             )
 
 # =========================
-# 5. KEY DATES
+# 6. KEY DATES
 # =========================
 st.write("")
 st.markdown('<div class="section-label">Key dates</div>', unsafe_allow_html=True)
@@ -908,7 +1686,7 @@ with st.container(border=True):
     )
 
 # =========================
-# 6. NOTABLE EVENTS
+# 7. NOTABLE EVENTS
 # =========================
 st.write("")
 st.markdown('<div class="section-label">Notable events</div>', unsafe_allow_html=True)
@@ -952,7 +1730,7 @@ with st.container(border=True):
     )
 
 # =========================
-# 7. ±1.5% INTRADAY MOVES
+# 8. ±1.5% INTRADAY MOVES
 # =========================
 st.write("")
 st.markdown('<div class="section-label">Intraday moves ±1.5%</div>', unsafe_allow_html=True)
